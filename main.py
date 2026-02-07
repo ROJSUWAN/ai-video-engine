@@ -1,9 +1,16 @@
+# ---------------------------------------------------------
+# ✅ บังคับให้โชว์ Logs ทันที (แก้ปัญหา Logs ค้าง)
+import sys
+sys.stdout.reconfigure(line_buffering=True)
+# ---------------------------------------------------------
+
 from flask import Flask, request, jsonify
 import threading
 import uuid
 import os
 import time
 import requests
+import cloudscraper # 🛠️ เครื่องมือเจาะระบบโหลดรูป
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -11,22 +18,27 @@ import edge_tts
 import asyncio
 from gtts import gTTS
 import nest_asyncio
-import gc # Garbage Collector
+import gc
 
 nest_asyncio.apply()
 app = Flask(__name__)
 
-# 🔗 Webhook URL (อันเดิม)
+# 🔗 Webhook URL (อันเดิมของคุณ)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 
-# --- Helper Functions (เหมือนเดิม Copy มาได้เลย) ---
-# ... (ใส่ get_font, create_placeholder_image, download_image, create_voice_safe, create_text_clip ไว้ตรงนี้) ...
-# ... (เพื่อความกระชับ ผมละไว้ในฐานที่เข้าใจนะครับ ถ้าไม่มีบอกผมได้เดี๋ยวแปะตัวเต็มให้) ...
+# --- Helper Functions ---
 
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "leelawad.ttf"]
     for name in font_names:
         if os.path.exists(name): return ImageFont.truetype(name, fontsize)
+    linux_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+    ]
+    for path in linux_paths:
+        if os.path.exists(path): return ImageFont.truetype(path, fontsize)
     return ImageFont.load_default()
 
 def create_placeholder_image(filename, text="No Image"):
@@ -39,22 +51,49 @@ def create_placeholder_image(filename, text="No Image"):
     img.save(filename)
 
 def download_image(url, filename):
+    """🔥 โหลดรูปฉบับนักเจาะระบบ (แก้ Image Error ถาวร)"""
+    print(f"⬇️ Downloading (Advanced): {url[:40]}...")
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://google.com'
-        }
+        # สร้าง Scraper (ตัวปลอมตัวขั้นสูง)
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True
+            }
+        )
+        
+        # ลองโหลด 3 รอบ
         for attempt in range(3):
             try:
-                response = requests.get(url, headers=headers, timeout=20, verify=False)
+                # ใช้ scraper โหลดแทน requests
+                response = scraper.get(url, timeout=30)
+                
                 if response.status_code == 200:
                     with open(filename, 'wb') as f:
                         f.write(response.content)
-                    Image.open(filename).convert('RGB').save(filename)
-                    return True
-            except: time.sleep(2)
+                    
+                    # เช็คไฟล์
+                    try:
+                        img = Image.open(filename)
+                        img.verify()
+                        img = Image.open(filename).convert('RGB')
+                        img.save(filename)
+                        print("✅ Download Success!")
+                        return True
+                    except:
+                         print("⚠️ Downloaded file is not a valid image.")
+                else:
+                    print(f"❌ Status: {response.status_code}")
+                    
+            except Exception as e:
+                print(f"⚠️ Retry {attempt+1}: {e}")
+                time.sleep(3) # พักนิดนึงค่อยลองใหม่
+                
         return False
-    except: return False
+    except Exception as e:
+        print(f"💥 Critical Download Error: {e}")
+        return False
 
 async def create_voice_safe(text, filename):
     try:
@@ -106,34 +145,32 @@ def upload_to_temp_host(filename):
     return None
 
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🚀 Low RAM Mode Starting...")
+    print(f"[{task_id}] 🚀 Starting (Advanced Mode)...")
     output_filename = f"video_{task_id}.mp4"
     temp_files = []
     
     try:
-        # 🔥 เปลี่ยนวิธี: สร้างทีละไฟล์ย่อยๆ แล้วค่อยเอามาต่อกัน (Concatenate)
-        # วิธีนี้ประหยัด RAM กว่าการถือ Clips ทั้งหมดไว้ในมือ
-        
-        clip_files = [] # เก็บชื่อไฟล์วิดีโอย่อย
+        clip_files = []
         
         for i, scene in enumerate(scenes):
             print(f"[{task_id}] Processing Scene {i+1}...")
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
-            clip_output = f"clip_{task_id}_{i}.mp4" # ไฟล์ย่อย
+            clip_output = f"clip_{task_id}_{i}.mp4"
             
             temp_files.extend([img_file, audio_file])
             clip_files.append(clip_output)
 
-            # 1. Prepare Assets
+            # 1. Download Image (ใช้ Cloudscraper)
             if not download_image(scene['image_url'], img_file):
-                 create_placeholder_image(img_file, "Image Error")
+                 print(f"⚠️ Image Failed, using placeholder")
+                 create_placeholder_image(img_file, f"Image Error Scene {i+1}")
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
 
-            # 2. Render Small Clip immediately (Render แล้วเซฟเลย ไม่เก็บใน RAM)
+            # 2. Render Small Clip
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
@@ -148,18 +185,11 @@ def process_video_background(task_id, scenes):
                     txt_clip = create_text_clip(scene['script'], duration=dur)
                     video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
                     
-                    # 🔥 Write immediately!
                     video.write_videofile(
-                        clip_output, 
-                        fps=15, # ลด FPS เหลือ 15 พอสำหรับ TikTok
-                        codec='libx264', 
-                        audio_codec='aac', 
-                        preset='ultrafast',
-                        threads=2,
-                        logger=None # ปิด log รกๆ
+                        clip_output, fps=15, codec='libx264', audio_codec='aac', 
+                        preset='ultrafast', threads=2, logger=None
                     )
                     
-                    # คืน RAM ทันที
                     video.close()
                     del video, img_clip, txt_clip, audio
                     gc.collect() 
@@ -167,21 +197,15 @@ def process_video_background(task_id, scenes):
                 except Exception as e: 
                     print(f"❌ Error Scene {i}: {e}")
 
-        # 3. Concatenate all clips (ต่อไฟล์ย่อย)
+        # 3. Concatenate
         if clip_files:
-            print(f"[{task_id}] 🎞️ Merging {len(clip_files)} clips...")
-            
-            # ใช้ method ของ moviepy แบบประหยัด ram
+            print(f"[{task_id}] 🎞️ Merging clips...")
             clips = [VideoFileClip(c) for c in clip_files]
-            final = concatenate_videoclips(clips, method="compose") # compose ปลอดภัยกว่า
+            final = concatenate_videoclips(clips, method="compose")
             
             final.write_videofile(
-                output_filename, 
-                fps=15, 
-                codec='libx264', 
-                audio_codec='aac', 
-                preset='ultrafast', 
-                threads=2
+                output_filename, fps=15, codec='libx264', audio_codec='aac', 
+                preset='ultrafast', threads=2
             )
             
             # 4. Upload & Send
@@ -189,21 +213,16 @@ def process_video_background(task_id, scenes):
             if video_url:
                 print(f"[{task_id}] 🚀 Sending Webhook...")
                 requests.post(N8N_WEBHOOK_URL, json={
-                    'task_id': task_id, 
-                    'status': 'success',
-                    'video_url': video_url
+                    'task_id': task_id, 'status': 'success', 'video_url': video_url
                 })
             
-            # Close all
             final.close()
             for c in clips: c.close()
             
     except Exception as e:
         print(f"[{task_id}] Error: {e}")
     finally:
-        # Cleanup ALL temp files
-        all_temps = temp_files + [output_filename]
-        # ต้องลบไฟล์ clip ย่อยๆ ด้วย (แต่ในตัวแปร local เข้าถึงยาก ให้ปล่อยไปก่อนหรือเพิ่ม logic ลบ)
+        # Cleanup
         try:
             for f in os.listdir():
                 if f.startswith(f"clip_{task_id}") or f.startswith(f"temp_{task_id}") or f.startswith(f"video_{task_id}"):
