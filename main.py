@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_file
 import os
 import uuid
+import time
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -10,7 +11,7 @@ import asyncio
 from gtts import gTTS
 import nest_asyncio
 
-# ✅ แก้ปัญหา Event Loop ชนกันใน Flask (สำคัญมาก)
+# ✅ แก้ปัญหา Event Loop ชนกัน
 nest_asyncio.apply()
 
 app = Flask(__name__)
@@ -18,161 +19,173 @@ app = Flask(__name__)
 # --- Helper Functions ---
 
 def get_font(fontsize):
-    """หาฟอนต์ภาษาไทยที่ใช้ได้ ทั้งบน Windows และ Linux"""
-    # 1. หา Tahoma ที่เราอาจจะอัปโหลดไป
-    if os.path.exists("tahoma.ttf"):
-        return ImageFont.truetype("tahoma.ttf", fontsize)
+    """หาฟอนต์ภาษาไทย"""
+    font_names = ["tahoma.ttf", "leelawad.ttf", "arial.ttf"]
+    # ลองหาในโฟลเดอร์ปัจจุบันก่อน
+    for name in font_names:
+        if os.path.exists(name): return ImageFont.truetype(name, fontsize)
     
-    # 2. หาฟอนต์มาตรฐาน Linux (เช่นใน Railway)
-    linux_fonts = [
+    # ลองหาใน System Fonts ของ Linux
+    linux_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
     ]
-    for path in linux_fonts:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, fontsize)
+    for path in linux_paths:
+        if os.path.exists(path): return ImageFont.truetype(path, fontsize)
             
-    # 3. ถ้าไม่เจอเลย ใช้ Default (อ่านไทยไม่ออกแต่ไม่ Error)
-    print("⚠️ หาฟอนต์ไม่เจอ! ใช้ฟอนต์ Default")
     return ImageFont.load_default()
 
-def download_image(url, filename):
+def create_placeholder_image(filename, text="Image Failed"):
+    """สร้างภาพสำรองกรณีโหลดรูปไม่ได้"""
+    img = Image.new('RGB', (1080, 1920), color=(50, 50, 50))
+    d = ImageDraw.Draw(img)
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=20)
-        if response.status_code == 200:
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-            
-            # ✅ เช็คว่าเป็นรูปจริงไหม (กัน Unsplash ส่ง HTML มาหลอก)
-            try:
-                img = Image.open(filename).convert('RGB')
-                img.save(filename)
-                return True
-            except:
-                print(f"❌ URL นี้ไม่ใช่รูปภาพ (อาจเป็นเว็บ): {url}")
-                return False
-    except Exception as e:
-        print(f"💥 Error โหลดรูป: {e}")
-    return False
+        f = get_font(100)
+        d.text((100, 900), text, fill=(255, 100, 100), font=f)
+    except:
+        pass
+    img.save(filename)
 
-async def create_voice_safe(text, filename):
+def download_image(url, filename, logs):
+    try:
+        # ✅ เพิ่ม Timeout เป็น 60 วินาที และปลอมตัวเนียนขึ้น
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        # ลองโหลด 3 ครั้ง (Retry)
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=headers, timeout=60)
+                if response.status_code == 200:
+                    with open(filename, 'wb') as f:
+                        f.write(response.content)
+                    # เช็คไฟล์
+                    img = Image.open(filename).convert('RGB')
+                    img.save(filename)
+                    return True
+            except Exception as e:
+                logs.append(f"   ⚠️ Retry {attempt+1}: {str(e)}")
+                time.sleep(2)
+        
+        logs.append(f"   ❌ โหลดรูปไม่ผ่านจริงๆ: {url}")
+        return False
+
+    except Exception as e:
+        logs.append(f"   💥 Error Download: {str(e)}")
+        return False
+
+async def create_voice_safe(text, filename, logs):
     try:
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
         await communicate.save(filename)
     except Exception as e:
-        print(f"⚠️ Edge TTS พลาด ({e}) -> ใช้ Google TTS แทน")
-        tts = gTTS(text=text, lang='th')
-        tts.save(filename)
+        logs.append(f"   ⚠️ EdgeTTS Error: {e}")
+        try:
+            tts = gTTS(text=text, lang='th')
+            tts.save(filename)
+        except Exception as ge:
+            logs.append(f"   ❌ gTTS Error: {ge}")
 
 def create_text_clip(text, size=(1080, 1920), duration=5):
     fontsize = 50
     img = Image.new('RGBA', size, (0, 0, 0, 0))
     font = get_font(fontsize)
     
-    # จัดการข้อความ
-    draw = ImageDraw.Draw(img)
-    
-    # (โค้ดจัดบรรทัดแบบย่อ เพื่อความกระชับ)
-    max_width = size[0] - 100
+    # จัดการข้อความ (Word Wrap แบบง่าย)
     lines = []
-    for line in text.split('\n'):
-        temp_line = ""
-        for char in line:
-            if draw.textlength(temp_line + char, font=font) <= max_width:
-                temp_line += char
-            else:
-                lines.append(temp_line)
-                temp_line = char
-        lines.append(temp_line)
+    temp_line = ""
+    max_chars = 30 # ประมาณเอาเพื่อความเร็ว
+    for word in text.split(' '):
+        if len(temp_line + word) < max_chars:
+            temp_line += word + " "
+        else:
+            lines.append(temp_line)
+            temp_line = word + " "
+    lines.append(temp_line)
 
-    # วาดพื้นหลังและข้อความ
-    text_height = len(lines) * (fontsize * 1.5)
-    start_y = size[1] - text_height - 200
+    # วาดพื้นหลัง
+    text_height = len(lines) * 80
+    start_y = 1500 # ตำแหน่งด้านล่าง
     
     overlay = Image.new('RGBA', size, (0,0,0,0))
-    d_overlay = ImageDraw.Draw(overlay)
-    d_overlay.rectangle([50, start_y - 20, size[0]-50, start_y + text_height + 20], fill=(0,0,0,160))
+    draw = ImageDraw.Draw(overlay)
+    draw.rectangle([50, start_y - 20, 1030, start_y + text_height + 20], fill=(0,0,0,180))
     img = Image.alpha_composite(img, overlay)
     
-    d_final = ImageDraw.Draw(img)
+    # วาดข้อความ
+    draw_text = ImageDraw.Draw(img)
     cur_y = start_y
     for line in lines:
-        w = d_final.textlength(line, font=font)
-        d_final.text(((size[0]-w)/2, cur_y), line, font=font, fill="white")
-        cur_y += (fontsize * 1.5)
+        draw_text.text((80, cur_y), line, font=font, fill="white")
+        cur_y += 80
         
     return ImageClip(np.array(img)).set_duration(duration)
 
 @app.route('/create-video', methods=['POST'])
 def api_create_video():
-    data = request.json
-    print(f"\n📩 ได้รับงาน: {len(data.get('scenes', []))} ฉาก")
-    
-    scenes = data.get('scenes', [])
-    if not scenes: return jsonify({"error": "No scenes"}), 400
-
-    task_id = str(uuid.uuid4())
-    output_filename = f"final_{task_id}.mp4"
-    clips = []
-    temp_files = []
-
+    logs = [] # ✅ เก็บ Log ไว้ส่งกลับไปให้ n8n ดู
     try:
+        data = request.json
+        scenes = data.get('scenes', [])
+        
+        task_id = str(uuid.uuid4())
+        output_filename = f"final_{task_id}.mp4"
+        clips = []
+        temp_files = []
+
         for i, scene in enumerate(scenes):
-            print(f"--- เริ่มฉากที่ {i+1} ---")
+            logs.append(f"🎬 กำลังทำฉากที่ {i+1}")
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             temp_files.extend([img_file, audio_file])
 
-            # 1. โหลดรูป
-            if not download_image(scene['image_url'], img_file):
-                print(f"⚠️ ข้ามฉาก {i+1}: โหลดรูปไม่ผ่าน")
-                continue
+            # 1. โหลดรูป (ถ้าพัง ให้ใช้ภาพสำรอง แทนที่จะ Error)
+            if not download_image(scene['image_url'], img_file, logs):
+                logs.append(f"   ⚠️ ใช้ภาพ Placeholder แทน")
+                create_placeholder_image(img_file, f"Image Error: Scene {i+1}")
 
             # 2. สร้างเสียง
-            # ใช้ loop ใหม่เพื่อป้องกันการชนกับ Flask
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
+            loop.run_until_complete(create_voice_safe(scene['script'], audio_file, logs))
             
             if not os.path.exists(audio_file):
-                print(f"⚠️ ข้ามฉาก {i+1}: สร้างเสียงไม่ได้")
+                logs.append(f"   ❌ สร้างเสียงไม่ผ่าน ข้ามฉากนี้")
                 continue
 
-            # 3. ตัดต่อ
-            audio = AudioFileClip(audio_file)
-            dur = audio.duration + 0.5
-            
-            img_clip = ImageClip(img_file).set_duration(dur)
-            # Resize ให้เต็มจอ (Center Crop)
-            if img_clip.w / img_clip.h > 9/16:
-                img_clip = img_clip.resize(height=1920)
-                img_clip = img_clip.crop(x_center=img_clip.w/2, width=1080)
-            else:
-                img_clip = img_clip.resize(width=1080)
-                img_clip = img_clip.crop(y_center=img_clip.h/2, height=1920)
+            # 3. รวมร่าง
+            try:
+                audio = AudioFileClip(audio_file)
+                dur = audio.duration + 0.5
+                img_clip = ImageClip(img_file).set_duration(dur)
+                
+                # Resize
+                if img_clip.w / img_clip.h > 9/16:
+                    img_clip = img_clip.resize(height=1920)
+                    img_clip = img_clip.crop(x_center=img_clip.w/2, width=1080)
+                else:
+                    img_clip = img_clip.resize(width=1080)
+                    img_clip = img_clip.crop(y_center=img_clip.h/2, height=1920)
 
-            txt_clip = create_text_clip(scene['script'], duration=dur)
-            video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
-            clips.append(video)
-            print(f"✅ ฉาก {i+1} เสร็จสมบูรณ์")
+                txt_clip = create_text_clip(scene['script'], duration=dur)
+                video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
+                clips.append(video)
+            except Exception as e:
+                logs.append(f"   ❌ ตัดต่อพัง: {e}")
 
         if not clips:
-            return jsonify({"message": "ไม่สามารถสร้างคลิปได้เลย (ตรวจสอบ URL รูปภาพ หรือ ระบบเสียง)"}), 500
+            return jsonify({"status": "error", "logs": logs, "message": "ไม่สำเร็จสักฉาก"}), 500
 
-        print("🎞️ กำลัง Render รวม...")
+        logs.append("🎞️ กำลัง Render...")
         final = concatenate_videoclips(clips)
-        # ลด FPS เหลือ 15 เพื่อความเร็วและประหยัด RAM บน Cloud
         final.write_videofile(output_filename, fps=15, codec='libx264', audio_codec='aac')
         
         return send_file(output_filename, mimetype='video/mp4')
 
     except Exception as e:
-        print(f"💥 Critical Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "critical_error", "error": str(e), "logs": logs}), 500
     finally:
-        # ล้างขยะ
         for f in temp_files:
             if os.path.exists(f): os.remove(f)
         if os.path.exists(output_filename): os.remove(output_filename)
