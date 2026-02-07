@@ -1,5 +1,4 @@
 # ---------------------------------------------------------
-# ✅ บังคับให้โชว์ Logs ทันที (แก้ปัญหา Logs ค้าง)
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 # ---------------------------------------------------------
@@ -10,7 +9,7 @@ import uuid
 import os
 import time
 import requests
-import cloudscraper # 🛠️ เครื่องมือเจาะระบบโหลดรูป
+import cloudscraper
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -19,11 +18,12 @@ import asyncio
 from gtts import gTTS
 import nest_asyncio
 import gc
+import random # ✅ เพิ่มตัวสุ่ม
 
 nest_asyncio.apply()
 app = Flask(__name__)
 
-# 🔗 Webhook URL (อันเดิมของคุณ)
+# 🔗 Webhook URL (อันเดิม)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 
 # --- Helper Functions ---
@@ -51,50 +51,53 @@ def create_placeholder_image(filename, text="No Image"):
     img.save(filename)
 
 def download_image(url, filename):
-    """🔥 โหลดรูปฉบับนักเจาะระบบ (แก้ Image Error ถาวร)"""
-    print(f"⬇️ Downloading (Advanced): {url[:40]}...")
-    try:
-        # สร้าง Scraper (ตัวปลอมตัวขั้นสูง)
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True
-            }
-        )
+    """🔥 โหลดรูปเวอร์ชันอัปเกรด (Flux + Backup Plans)"""
+    
+    # 1. ปรับจูน URL ของ Pollinations ให้ใช้โมเดลใหม่ (Flux) และสุ่ม Seed
+    if "pollinations.ai" in url:
+        sep = "&" if "?" in url else "?"
+        # เพิ่ม model=flux, ขนาดภาพแนวตั้ง, และ seed สุ่ม (แก้ปัญหา Cache)
+        url += f"{sep}model=flux&width=720&height=1280&seed={random.randint(0, 99999)}"
         
-        # ลองโหลด 3 รอบ
-        for attempt in range(3):
-            try:
-                # ใช้ scraper โหลดแทน requests
-                response = scraper.get(url, timeout=30)
-                
-                if response.status_code == 200:
-                    with open(filename, 'wb') as f:
-                        f.write(response.content)
-                    
-                    # เช็คไฟล์
-                    try:
-                        img = Image.open(filename)
-                        img.verify()
-                        img = Image.open(filename).convert('RGB')
-                        img.save(filename)
-                        print("✅ Download Success!")
-                        return True
-                    except:
-                         print("⚠️ Downloaded file is not a valid image.")
-                else:
-                    print(f"❌ Status: {response.status_code}")
-                    
-            except Exception as e:
-                print(f"⚠️ Retry {attempt+1}: {e}")
-                time.sleep(3) # พักนิดนึงค่อยลองใหม่
-                
-        return False
-    except Exception as e:
-        print(f"💥 Critical Download Error: {e}")
-        return False
+    print(f"⬇️ Downloading: {url[:60]}...")
+    
+    # สร้าง Scraper
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    
+    # --- แผน A: พยายามโหลดจาก AI (3 รอบ) ---
+    for attempt in range(3):
+        try:
+            response = scraper.get(url, timeout=20)
+            if response.status_code == 200:
+                with open(filename, 'wb') as f: f.write(response.content)
+                # เช็คไฟล์
+                Image.open(filename).verify()
+                Image.open(filename).convert('RGB').save(filename)
+                print("✅ AI Image Downloaded!")
+                return True
+            else:
+                print(f"⚠️ AI Status: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Retry {attempt+1}: {e}")
+            time.sleep(2)
 
+    # --- แผน B: ถ้า AI พัง ให้ใช้ภาพวิวสวยๆ แทน (ดีกว่าจอดำ) ---
+    print("⚠️ AI Failed (502/Block). Switching to Plan B (Random Photo)...")
+    try:
+        # ใช้ Picsum (ฟรีและไม่บล็อก)
+        backup_url = f"https://picsum.photos/720/1280?random={random.randint(0, 1000)}"
+        response = requests.get(backup_url, timeout=20)
+        if response.status_code == 200:
+            with open(filename, 'wb') as f: f.write(response.content)
+            Image.open(filename).convert('RGB').save(filename)
+            print("✅ Backup Image Used!")
+            return True
+    except Exception as e:
+        print(f"❌ Backup Failed: {e}")
+
+    return False
+
+# ... (ส่วนสร้างเสียง create_voice_safe เหมือนเดิม) ...
 async def create_voice_safe(text, filename):
     try:
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
@@ -105,6 +108,7 @@ async def create_voice_safe(text, filename):
             tts.save(filename)
         except: pass
 
+# ... (ส่วนสร้าง Text Clip เหมือนเดิม) ...
 def create_text_clip(text, size=(1080, 1920), duration=5):
     fontsize = 50
     img = Image.new('RGBA', size, (0, 0, 0, 0))
@@ -131,6 +135,7 @@ def create_text_clip(text, size=(1080, 1920), duration=5):
         cur_y += 70
     return ImageClip(np.array(img)).set_duration(duration)
 
+# ... (ส่วน Upload เหมือนเดิม) ...
 def upload_to_temp_host(filename):
     try:
         print(f"☁️ Uploading {filename}...")
@@ -144,14 +149,14 @@ def upload_to_temp_host(filename):
         print(f"❌ Upload Error: {e}")
     return None
 
+# ... (ส่วน Process Video หลัก เหมือนเดิมเป๊ะ) ...
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🚀 Starting (Advanced Mode)...")
+    print(f"[{task_id}] 🚀 Starting (Bulletproof Mode)...")
     output_filename = f"video_{task_id}.mp4"
     temp_files = []
     
     try:
         clip_files = []
-        
         for i, scene in enumerate(scenes):
             print(f"[{task_id}] Processing Scene {i+1}...")
             img_file = f"temp_{task_id}_{i}.jpg"
@@ -161,10 +166,10 @@ def process_video_background(task_id, scenes):
             temp_files.extend([img_file, audio_file])
             clip_files.append(clip_output)
 
-            # 1. Download Image (ใช้ Cloudscraper)
+            # 1. Download Image (ใช้ฟังก์ชันใหม่)
             if not download_image(scene['image_url'], img_file):
-                 print(f"⚠️ Image Failed, using placeholder")
-                 create_placeholder_image(img_file, f"Image Error Scene {i+1}")
+                 print(f"⚠️ Everything Failed, using placeholder")
+                 create_placeholder_image(img_file, f"Scene {i+1}")
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -222,7 +227,6 @@ def process_video_background(task_id, scenes):
     except Exception as e:
         print(f"[{task_id}] Error: {e}")
     finally:
-        # Cleanup
         try:
             for f in os.listdir():
                 if f.startswith(f"clip_{task_id}") or f.startswith(f"temp_{task_id}") or f.startswith(f"video_{task_id}"):
