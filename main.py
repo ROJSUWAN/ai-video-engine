@@ -33,22 +33,8 @@ HF_TOKEN = "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"
 # --- Helper Functions ---
 
 def get_font(fontsize):
-    # พยายามหาฟอนต์ที่รองรับภาษาไทย
-    font_names = ["tahoma.ttf", "arial.ttf", "leelawad.ttf", "NotoSansThai-Regular.ttf"]
-    for name in font_names:
-        # เช็คในโฟลเดอร์ปัจจุบันและระบบ
-        if os.path.exists(name): return ImageFont.truetype(name, fontsize)
-        
-    # Linux Path
-    linux_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
-    ]
-    for path in linux_paths:
-        if os.path.exists(path): return ImageFont.truetype(path, fontsize)
-        
-    return ImageFont.load_default()
+    try: return ImageFont.truetype("arial.ttf", fontsize)
+    except: return ImageFont.load_default()
 
 def create_placeholder_image(filename):
     img = Image.new('RGB', (720, 1280), color=(50, 50, 50))
@@ -87,111 +73,104 @@ async def create_voice_safe(text, filename):
         try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
-# ✅ ฟังก์ชันสร้าง Subtitle (เอากลับมาแล้ว!)
 def create_text_clip(text, size=(720, 1280), duration=5):
     try:
-        # 1. สร้างภาพพื้นหลังใส
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-        font_size = 50
-        font = get_font(font_size)
+        font = get_font(50)
         
-        # 2. ตัดคำ (Word Wrap)
         lines = []
         temp_line = ""
         for word in text.split(' '):
-            if len(temp_line + word) < 20: # 20 ตัวอักษรต่อบรรทัด
-                temp_line += word + " "
+            if len(temp_line + word) < 20: temp_line += word + " "
             else:
                 lines.append(temp_line)
                 temp_line = word + " "
         lines.append(temp_line)
 
-        # 3. คำนวณตำแหน่ง
         text_height = len(lines) * 70
-        start_y = size[1] - 350 # อยู่ด้านล่าง (เว้นจากขอบล่าง 350px)
-        
-        # 4. วาดกล่องดำจางๆ รองหลัง (เพื่อให้ตัวหนังสือชัด)
-        box_padding = 20
-        draw.rectangle(
-            [40, start_y - box_padding, size[0] - 40, start_y + text_height + box_padding], 
-            fill=(0, 0, 0, 160) # สีดำโปร่งแสง
-        )
+        start_y = size[1] - 350
+        draw.rectangle([40, start_y - 20, size[0] - 40, start_y + text_height + 20], fill=(0, 0, 0, 160))
 
-        # 5. วาดตัวหนังสือ
         cur_y = start_y
         for line in lines:
-            # พยายามจัดกึ่งกลาง
             try:
-                # ใช้ textbbox เพื่อหาขนาดข้อความ (Pillow รุ่นใหม่)
                 left, top, right, bottom = draw.textbbox((0, 0), line, font=font)
-                w = right - left
-                x = (size[0] - w) / 2
-            except:
-                x = 60 # ถ้า error ให้ชิดซ้าย
-            
-            # วาดสีขาว
+                x = (size[0] - (right - left)) / 2
+            except: x = 60
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += 70
 
         return ImageClip(np.array(img)).set_duration(duration)
-        
-    except Exception as e:
-        print(f"⚠️ Text Error: {e}")
-        # ถ้าพังจริงๆ ให้ส่งภาพใสเปล่าๆ ไปแทน (กัน Video Error)
+    except:
         return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
-def upload_to_temp_host(filename):
+def upload_to_host(filename):
+    """🔥 ระบบอัปโหลดแบบ Hybrid (ลอง 2 เว็บ)"""
+    
+    # วิธีที่ 1: tmpfiles.org
     try:
+        print(f"☁️ Trying upload to tmpfiles.org...")
         with open(filename, 'rb') as f:
-            r = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f})
+            # เพิ่ม timeout 60 วินาที กันค้าง
+            r = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f}, timeout=60)
             if r.status_code == 200:
-                return r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
-    except: pass
+                url = r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+                print(f"✅ Upload Success (tmpfiles): {url}")
+                return url
+            else:
+                print(f"⚠️ tmpfiles error: {r.status_code}")
+    except Exception as e:
+        print(f"⚠️ tmpfiles failed: {e}")
+
+    # วิธีที่ 2: Catbox (Backup)
+    try:
+        print(f"☁️ Trying upload to Catbox (Backup)...")
+        with open(filename, 'rb') as f:
+            data = {'reqtype': 'fileupload'}
+            r = requests.post('https://catbox.moe/user/api.php', data=data, files={'fileToUpload': f}, timeout=120)
+            if r.status_code == 200:
+                url = r.text
+                print(f"✅ Upload Success (Catbox): {url}")
+                return url
+    except Exception as e:
+        print(f"❌ All uploads failed: {e}")
+        
     return None
 
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🚀 Starting with Subtitles...")
+    print(f"[{task_id}] 🚀 Starting Video Process...")
     output_filename = f"video_{task_id}.mp4"
     
     try:
         valid_clips = []
         for i, scene in enumerate(scenes):
             gc.collect()
-            print(f"[{task_id}] Scene {i+1}...")
+            print(f"[{task_id}] Processing Scene {i+1}...")
             
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
 
-            # 1. Image
             prompt = get_clean_prompt(scene)
             if not generate_image_hf(prompt, img_file):
                  create_placeholder_image(img_file)
 
-            # 2. Audio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
 
-            # 3. Render Clip
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
                     dur = audio.duration + 0.5
                     
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
-                    
-                    # ✅ ใส่ Subtitle กลับเข้าไปตรงนี้
                     txt_clip = create_text_clip(scene['script'], duration=dur)
                     
-                    # รวมร่าง (Image + Text)
                     video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
                     
-                    video.write_videofile(
-                        clip_output, fps=15, codec='libx264', audio_codec='aac', 
-                        preset='ultrafast', threads=2, logger=None
-                    )
+                    video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
                     
                     if os.path.exists(clip_output): valid_clips.append(clip_output)
                     
@@ -200,16 +179,20 @@ def process_video_background(task_id, scenes):
                     gc.collect()
                 except Exception as e: print(f"❌ Error Scene {i}: {e}")
 
-        # 4. Merge
         if valid_clips:
-            print(f"[{task_id}] 🎞️ Merging...")
+            print(f"[{task_id}] 🎞️ Merging Clips...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
             final.write_videofile(output_filename, fps=15, preset='ultrafast')
             
-            video_url = upload_to_temp_host(output_filename)
+            print(f"[{task_id}] 📤 Uploading Video...")
+            video_url = upload_to_host(output_filename)
+            
             if video_url:
+                print(f"[{task_id}] 🚀 Sending Webhook...")
                 requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': video_url})
+            else:
+                print(f"[{task_id}] ❌ Upload Failed (Cannot send webhook)")
             
             final.close()
             for c in clips: c.close()
