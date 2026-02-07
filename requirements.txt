@@ -9,6 +9,4 @@ requests
 edge-tts
 gtts
 nest_asyncio
-urllib3
-cloudscraper
-brotli
+huggingface_hub

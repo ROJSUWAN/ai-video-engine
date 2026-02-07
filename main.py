@@ -9,7 +9,7 @@ import uuid
 import os
 import time
 import requests
-import cloudscraper
+from huggingface_hub import InferenceClient # ✅ พระเอกของเรา
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -18,7 +18,8 @@ import asyncio
 from gtts import gTTS
 import nest_asyncio
 import gc
-import random # ✅ เพิ่มตัวสุ่ม
+import random
+from urllib.parse import unquote
 
 nest_asyncio.apply()
 app = Flask(__name__)
@@ -26,212 +27,159 @@ app = Flask(__name__)
 # 🔗 Webhook URL (อันเดิม)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 
+# 🔑 Token ของคุณ (ใส่ให้แล้วครับ)
+HF_TOKEN = "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"
+
 # --- Helper Functions ---
 
 def get_font(fontsize):
-    font_names = ["tahoma.ttf", "arial.ttf", "leelawad.ttf"]
-    for name in font_names:
-        if os.path.exists(name): return ImageFont.truetype(name, fontsize)
-    linux_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
-    ]
-    for path in linux_paths:
-        if os.path.exists(path): return ImageFont.truetype(path, fontsize)
-    return ImageFont.load_default()
+    try: return ImageFont.truetype("arial.ttf", fontsize)
+    except: return ImageFont.load_default()
 
-def create_placeholder_image(filename, text="No Image"):
-    img = Image.new('RGB', (1080, 1920), color=(30, 30, 30))
-    d = ImageDraw.Draw(img)
-    try:
-        f = get_font(60)
-        d.text((100, 900), text, fill=(255, 100, 100), font=f)
-    except: pass
+def create_placeholder_image(filename):
+    img = Image.new('RGB', (720, 1280), color=(50, 50, 50))
     img.save(filename)
 
-def download_image(url, filename):
-    """🔥 โหลดรูปเวอร์ชันอัปเกรด (Flux + Backup Plans)"""
+def generate_image_hf(prompt, filename):
+    """🔥 สร้างภาพด้วย Flux.1 (Nano Banana) ผ่าน Token ของคุณ"""
+    print(f"🎨 Generative AI Working on: {prompt[:30]}...")
     
-    # 1. ปรับจูน URL ของ Pollinations ให้ใช้โมเดลใหม่ (Flux) และสุ่ม Seed
-    if "pollinations.ai" in url:
-        sep = "&" if "?" in url else "?"
-        # เพิ่ม model=flux, ขนาดภาพแนวตั้ง, และ seed สุ่ม (แก้ปัญหา Cache)
-        url += f"{sep}model=flux&width=720&height=1280&seed={random.randint(0, 99999)}"
-        
-    print(f"⬇️ Downloading: {url[:60]}...")
+    # รายชื่อโมเดล (ใช้ Flux Dev เป็นตัวหลัก)
+    models = [
+        "black-forest-labs/FLUX.1-dev",
+        "stabilityai/stable-diffusion-xl-base-1.0"
+    ]
     
-    # สร้าง Scraper
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    client = InferenceClient(token=HF_TOKEN)
     
-    # --- แผน A: พยายามโหลดจาก AI (3 รอบ) ---
-    for attempt in range(3):
+    for model in models:
         try:
-            response = scraper.get(url, timeout=20)
-            if response.status_code == 200:
-                with open(filename, 'wb') as f: f.write(response.content)
-                # เช็คไฟล์
-                Image.open(filename).verify()
-                Image.open(filename).convert('RGB').save(filename)
-                print("✅ AI Image Downloaded!")
-                return True
-            else:
-                print(f"⚠️ AI Status: {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ Retry {attempt+1}: {e}")
-            time.sleep(2)
-
-    # --- แผน B: ถ้า AI พัง ให้ใช้ภาพวิวสวยๆ แทน (ดีกว่าจอดำ) ---
-    print("⚠️ AI Failed (502/Block). Switching to Plan B (Random Photo)...")
-    try:
-        # ใช้ Picsum (ฟรีและไม่บล็อก)
-        backup_url = f"https://picsum.photos/720/1280?random={random.randint(0, 1000)}"
-        response = requests.get(backup_url, timeout=20)
-        if response.status_code == 200:
-            with open(filename, 'wb') as f: f.write(response.content)
-            Image.open(filename).convert('RGB').save(filename)
-            print("✅ Backup Image Used!")
+            # สั่งสร้างภาพ
+            image = client.text_to_image(
+                prompt,
+                model=model,
+                height=1024, 
+                width=768 # สัดส่วนเกือบๆ 9:16
+            )
+            
+            # Save และ Resize เป็น 720x1280 (TikTok Size)
+            image = image.convert("RGB").resize((720, 1280))
+            image.save(filename)
+            print(f"✅ Image Created with {model}")
             return True
-    except Exception as e:
-        print(f"❌ Backup Failed: {e}")
-
+            
+        except Exception as e:
+            print(f"⚠️ Model {model} busy/error: {e}")
+            time.sleep(1)
+            
     return False
 
-# ... (ส่วนสร้างเสียง create_voice_safe เหมือนเดิม) ...
+def get_clean_prompt(scene):
+    """แปลงข้อมูลจาก n8n ให้เป็น Prompt สำหรับวาดรูป"""
+    # 1. ถ้า image_url เป็น Link ของ Pollinations ให้แกะ Prompt ออกมา
+    url = scene.get('image_url', '')
+    if "pollinations" in url and "/prompt/" in url:
+        try:
+            return unquote(url.split("/prompt/")[1].split("?")[0])
+        except: pass
+        
+    # 2. ถ้า image_url ยาวๆ (ไม่ใช่ link) ให้ใช้เลย
+    if len(url) > 10 and not url.startswith("http"):
+        return url
+        
+    # 3. ถ้าไม่มีอะไรเลย ให้ใช้ Script บรรยายภาพแทน
+    return f"High quality realistic photo of {scene['script']}, cinematic lighting, 8k"
+
+# ... (ส่วนเสียง create_voice_safe เหมือนเดิม) ...
 async def create_voice_safe(text, filename):
     try:
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
         await communicate.save(filename)
     except:
-        try:
-            tts = gTTS(text=text, lang='th')
-            tts.save(filename)
+        try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
-# ... (ส่วนสร้าง Text Clip เหมือนเดิม) ...
-def create_text_clip(text, size=(1080, 1920), duration=5):
-    fontsize = 50
-    img = Image.new('RGBA', size, (0, 0, 0, 0))
-    font = get_font(fontsize)
-    lines = []
-    temp_line = ""
-    for word in text.split(' '):
-        if len(temp_line + word) < 25: temp_line += word + " "
-        else:
-            lines.append(temp_line)
-            temp_line = word + " "
-    lines.append(temp_line)
-    text_height = len(lines) * 70
-    start_y = 1400 
-    overlay = Image.new('RGBA', size, (0,0,0,0))
-    draw = ImageDraw.Draw(overlay)
-    draw.rectangle([50, start_y - 20, 1030, start_y + text_height + 20], fill=(0,0,0,160))
-    img = Image.alpha_composite(img, overlay)
-    draw_text = ImageDraw.Draw(img)
-    cur_y = start_y
-    for line in lines:
-        try: draw_text.text((80, cur_y), line, font=font, fill="white")
-        except: pass
-        cur_y += 70
-    return ImageClip(np.array(img)).set_duration(duration)
+def create_text_clip(text, size=(720, 1280), duration=5):
+    # Text แบบประหยัด RAM
+    return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
-# ... (ส่วน Upload เหมือนเดิม) ...
 def upload_to_temp_host(filename):
     try:
-        print(f"☁️ Uploading {filename}...")
         with open(filename, 'rb') as f:
-            response = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f})
-            if response.status_code == 200:
-                url = response.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
-                print(f"✅ Link: {url}")
-                return url
-    except Exception as e:
-        print(f"❌ Upload Error: {e}")
+            r = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f})
+            if r.status_code == 200:
+                return r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+    except: pass
     return None
 
-# ... (ส่วน Process Video หลัก เหมือนเดิมเป๊ะ) ...
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🚀 Starting (Bulletproof Mode)...")
+    print(f"[{task_id}] 🚀 Starting (Hugging Face Mode)...")
     output_filename = f"video_{task_id}.mp4"
-    temp_files = []
     
     try:
-        clip_files = []
+        valid_clips = []
         for i, scene in enumerate(scenes):
-            print(f"[{task_id}] Processing Scene {i+1}...")
+            gc.collect()
+            print(f"[{task_id}] Scene {i+1}...")
+            
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
-            
-            temp_files.extend([img_file, audio_file])
-            clip_files.append(clip_output)
 
-            # 1. Download Image (ใช้ฟังก์ชันใหม่)
-            if not download_image(scene['image_url'], img_file):
-                 print(f"⚠️ Everything Failed, using placeholder")
-                 create_placeholder_image(img_file, f"Scene {i+1}")
+            # 1. ✅ สร้างภาพ (ใช้ Logic ใหม่)
+            prompt = get_clean_prompt(scene)
+            if not generate_image_hf(prompt, img_file):
+                 print("⚠️ Image Gen Failed, using placeholder")
+                 create_placeholder_image(img_file)
 
+            # 2. สร้างเสียง
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
 
-            # 2. Render Small Clip
+            # 3. ตัดต่อ
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
-                    dur = audio.duration + 0.5 
+                    dur = audio.duration + 0.5
                     
-                    img_clip = ImageClip(img_file).set_duration(dur)
-                    if img_clip.w / img_clip.h > 9/16:
-                        img_clip = img_clip.resize(height=1920).crop(x_center=img_clip.w/2, width=1080)
-                    else:
-                        img_clip = img_clip.resize(width=1080).crop(y_center=img_clip.h/2, height=1920)
-                    
-                    txt_clip = create_text_clip(scene['script'], duration=dur)
-                    video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
+                    img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
+                    video = img_clip.set_audio(audio)
                     
                     video.write_videofile(
                         clip_output, fps=15, codec='libx264', audio_codec='aac', 
                         preset='ultrafast', threads=2, logger=None
                     )
                     
-                    video.close()
-                    del video, img_clip, txt_clip, audio
-                    gc.collect() 
+                    if os.path.exists(clip_output) and os.path.getsize(clip_output) > 1000:
+                        valid_clips.append(clip_output)
                     
-                except Exception as e: 
-                    print(f"❌ Error Scene {i}: {e}")
+                    video.close(); audio.close(); img_clip.close(); del video, audio, img_clip
+                    gc.collect()
+                except Exception as e: print(f"❌ Error Scene {i}: {e}")
 
-        # 3. Concatenate
-        if clip_files:
-            print(f"[{task_id}] 🎞️ Merging clips...")
-            clips = [VideoFileClip(c) for c in clip_files]
+        # 4. รวมไฟล์
+        if valid_clips:
+            print(f"[{task_id}] 🎞️ Merging {len(valid_clips)} clips...")
+            clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
+            final.write_videofile(output_filename, fps=15, preset='ultrafast')
             
-            final.write_videofile(
-                output_filename, fps=15, codec='libx264', audio_codec='aac', 
-                preset='ultrafast', threads=2
-            )
-            
-            # 4. Upload & Send
             video_url = upload_to_temp_host(output_filename)
             if video_url:
-                print(f"[{task_id}] 🚀 Sending Webhook...")
-                requests.post(N8N_WEBHOOK_URL, json={
-                    'task_id': task_id, 'status': 'success', 'video_url': video_url
-                })
+                print(f"[{task_id}] ✅ Success! Link: {video_url}")
+                requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': video_url})
             
             final.close()
             for c in clips: c.close()
-            
-    except Exception as e:
-        print(f"[{task_id}] Error: {e}")
+        else:
+            print("❌ No clips created.")
+
+    except Exception as e: print(f"[{task_id}] Error: {e}")
     finally:
         try:
             for f in os.listdir():
-                if f.startswith(f"clip_{task_id}") or f.startswith(f"temp_{task_id}") or f.startswith(f"video_{task_id}"):
-                    try: os.remove(f)
-                    except: pass
+                if task_id in f: os.remove(f)
         except: pass
 
 @app.route('/create-video', methods=['POST'])
