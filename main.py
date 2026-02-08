@@ -160,7 +160,7 @@ def generate_image_hf(prompt, filename):
 async def create_voice_safe(text, filename):
     try:
         # ใช้ Edge TTS เสียงภาษาไทย (Niwat)
-        communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
+        communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+25%")
         await communicate.save(filename)
     except:
         # สำรองใช้ gTTS
@@ -175,14 +175,17 @@ def create_watermark_clip(duration):
         size = (720, 1280)
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-        text = "NEWS BRIEF"
-        font = get_font(40)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        x = size[0] - w - 30; y = 80
-        draw.rectangle([x-10, y-5, x+w+10, y+h+5], fill=(200, 0, 0, 255))
-        draw.text((x, y), text, font=font, fill="white")
+        
+        # ตั้งค่า Font และข้อความตามรูป Logo ใหม่
+        font_big = get_font(50)   # สำหรับคำว่า THE BRIEF
+        font_small = get_font(20)  # สำหรับคำว่า NEWS IN MINUTES
+        
+        # วาดแถบสีขาว/ดำ หรือโปร่งใสตามดีไซน์รูปที่แนบมา
+        # (ในที่นี้แนะนำให้วาด Text ลงไปตรงๆ เพื่อความง่าย)
+        draw.text((500, 50), "THE", font=font_small, fill="white")
+        draw.text((500, 75), "BRIEF", font=font_big, fill="white")
+        draw.text((500, 130), "NEWS IN MINUTES", font=font_small, fill="red")
+        
         return ImageClip(np.array(img)).set_duration(duration)
     except: return None
 
@@ -266,7 +269,7 @@ def process_video_background(task_id, scenes):
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
-                    dur = max(4, audio.duration + 0.5)
+                    dur = max(4, audio.duration +0.2)
                     
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
                     # ใช้ script_text ที่ดึงมาอย่างถูกต้อง
