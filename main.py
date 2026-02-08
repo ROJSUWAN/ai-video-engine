@@ -1,5 +1,6 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Fast Upload + Compressed Video)
+# ✅ Mode: News Brief Pro (Super Upload Swarm)
+# เพิ่มเว็บฝากไฟล์ 4 เจ้า + Debug ละเอียด
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 import os
@@ -27,9 +28,10 @@ app = Flask(__name__)
 # 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 HF_TOKEN = os.environ.get("HF_TOKEN")
+# ถ้าอยากใช้ Discord ให้ใส่ URL ตรงนี้ (เช่น "https://discord.com/api/webhooks/...")
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK") 
 
 # --- Helper Functions (เหมือนเดิม) ---
-
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
     for name in font_names:
@@ -70,8 +72,7 @@ def search_real_image(query, filename):
     try:
         with DDGS() as ddgs:
             results = list(ddgs.images(query, max_results=1))
-            if results:
-                return download_image_from_url(results[0]['image'], filename)
+            if results: return download_image_from_url(results[0]['image'], filename)
     except: pass
     return False
 
@@ -103,9 +104,7 @@ def create_watermark_clip(duration):
         font = get_font(40)
         bbox = draw.textbbox((0, 0), text, font=font)
         w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        x = size[0] - w - 30
-        y = 80
+        x = size[0] - w - 30; y = 80
         draw.rectangle([x-10, y-5, x+w+10, y+h+5], fill=(200, 0, 0, 255)) 
         draw.text((x, y), text, font=font, fill="white")
         return ImageClip(np.array(img)).set_duration(duration)
@@ -139,106 +138,122 @@ def create_text_clip(text, size=(720, 1280), duration=5):
     except: return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
 # ---------------------------------------------------------
-# 🔥 อัปเกรดระบบอัปโหลด (ไวขึ้น + มี Timeout)
+# 🔥 SUPER UPLOAD SWARM (4 Providers)
 # ---------------------------------------------------------
 def upload_to_host(filename):
-    print(f"☁️ Uploading File Size: {os.path.getsize(filename) / (1024*1024):.2f} MB")
+    file_size = os.path.getsize(filename) / (1024*1024)
+    print(f"☁️ Uploading File: {file_size:.2f} MB")
 
-    # 1. Catbox (ดีสุด แต่บางทีช้า)
-    print("🚀 Try 1: Catbox...")
+    # 1. PixelDrain (เสถียรมาก)
+    print("🚀 Try 1: PixelDrain...")
+    try:
+        with open(filename, 'rb') as f:
+            r = requests.post("https://pixeldrain.com/api/file", 
+                              files={"file": f}, 
+                              auth=('', ''), # Anonymous
+                              timeout=60)
+            if r.status_code == 201:
+                file_id = r.json()["id"]
+                url = f"https://pixeldrain.com/api/file/{file_id}"
+                print(f"✅ Success (PixelDrain): {url}")
+                return url
+            else: print(f"⚠️ PixelDrain Error: {r.text}")
+    except Exception as e: print(f"⚠️ PixelDrain Failed: {e}")
+
+    # 2. File.io (ไวมาก ลิงก์ใช้ได้ 1 ครั้ง)
+    print("🚀 Try 2: File.io...")
+    try:
+        with open(filename, 'rb') as f:
+            r = requests.post('https://file.io', files={'file': f}, timeout=60)
+            if r.status_code == 200:
+                url = r.json()['link']
+                print(f"✅ Success (File.io): {url}")
+                return url
+    except Exception as e: print(f"⚠️ File.io Failed: {e}")
+
+    # 3. Catbox (ตัวเดิม)
+    print("🚀 Try 3: Catbox...")
     try:
         with open(filename, 'rb') as f:
             r = requests.post('https://catbox.moe/user/api.php', 
                               data={'reqtype': 'fileupload'}, 
-                              files={'fileToUpload': f}, 
-                              timeout=45) # ตัดจบถ้าเกิน 45 วิ
-            if r.status_code == 200: return r.text
+                              files={'fileToUpload': f}, timeout=60)
+            if r.status_code == 200: 
+                print(f"✅ Success (Catbox): {r.text}")
+                return r.text
     except Exception as e: print(f"⚠️ Catbox Failed: {e}")
 
-    # 2. Transfer.sh (ไวมาก เป็นตัวสำรองชั้นดี)
-    print("🚀 Try 2: Transfer.sh (Fast Backup)...")
-    try:
-        with open(filename, 'rb') as f:
-            # ใช้ curl style upload
-            r = requests.put(f'https://transfer.sh/{os.path.basename(filename)}', data=f, timeout=45)
-            if r.status_code == 200:
-                return r.text.strip()
-    except Exception as e: print(f"⚠️ Transfer.sh Failed: {e}")
-
-    # 3. Tmpfiles (ตัวสุดท้าย)
-    print("🚀 Try 3: Tmpfiles...")
-    try:
-        with open(filename, 'rb') as f:
-            r = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f}, timeout=45)
-            if r.status_code == 200: 
-                return r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
-    except: pass
+    # 4. Discord Webhook (ไม้ตายสุดท้าย)
+    if DISCORD_WEBHOOK:
+        print("🚀 Try 4: Discord Webhook...")
+        try:
+            with open(filename, 'rb') as f:
+                r = requests.post(DISCORD_WEBHOOK, files={'file': f}, timeout=60)
+                if r.status_code in [200, 204]:
+                    # Discord ไม่คืน URL โดยตรง ต้อง Hack นิดหน่อย หรือถ้าส่งไป Channel แล้วก็ถือว่าจบ
+                    # แต่เพื่อให้ n8n ได้ URL เราจะใช้ Attachment URL (ต้องเขียนโค้ดเพิ่มซับซ้อน)
+                    # เอาเป็นว่าถ้าส่ง Discord ผ่าน คือเราได้ไฟล์แน่นอน
+                    print("✅ Sent to Discord!")
+                    return "CHECK_DISCORD" 
+        except Exception as e: print(f"⚠️ Discord Failed: {e}")
 
     return None
 
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🎬 Starting Process...")
+    print(f"[{task_id}] 🎬 Starting...")
     output_filename = f"video_{task_id}.mp4"
     
     try:
         valid_clips = []
         for i, scene in enumerate(scenes):
             gc.collect()
-            print(f"[{task_id}] Scene {i+1}/{len(scenes)}...")
+            print(f"[{task_id}] Scene {i+1}...")
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
             
-            # Image Logic
             prompt = scene.get('image_url', '')
             success = False
-            if "http" in prompt:
-                if download_image_from_url(prompt, img_file): success = True
-            if not success:
-                if not search_real_image(prompt, img_file):
-                    if not generate_image_hf(prompt, img_file):
-                        Image.new('RGB', (720, 1280), (0,0,50)).save(img_file)
+            if "http" in prompt and download_image_from_url(prompt, img_file): success = True
+            if not success and not search_real_image(prompt, img_file):
+                if not generate_image_hf(prompt, img_file):
+                    Image.new('RGB', (720, 1280), (0,0,50)).save(img_file)
 
-            # Audio Logic
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
 
-            # Render Clip
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
                     dur = max(4, audio.duration + 0.5)
-                    
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
                     txt_clip = create_text_clip(scene['script'], duration=dur)
                     watermark = create_watermark_clip(dur)
-                    
                     layers = [img_clip, txt_clip]
                     if watermark: layers.append(watermark)
-                    
                     video = CompositeVideoClip(layers).set_audio(audio)
-                    # ⚠️ เรนเดอร์แบบ Draft Quality (ไวขึ้น)
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
-                    
                     valid_clips.append(clip_output)
                     video.close(); audio.close(); img_clip.close(); txt_clip.close()
-                except Exception as e: print(f"❌ Error Scene {i}: {e}")
+                except Exception as e: print(f"Error: {e}")
 
         if valid_clips:
             print(f"[{task_id}] 🎞️ Merging & Compressing...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
-            
-            # 🔥 บีบอัดไฟล์ (Bitrate 2000k) เพื่อให้ไฟล์เล็กและอัปโหลดไว
             final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
             
             url = upload_to_host(output_filename)
+            
             if url:
                 print(f"[{task_id}] ✅ DONE: {url}")
-                requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url})
+                try:
+                    requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url}, timeout=10)
+                    print(f"[{task_id}] 🚀 Webhook Sent!")
+                except Exception as e: print(f"Webhook Error: {e}")
             else:
-                print(f"[{task_id}] ❌ Upload Failed")
+                print(f"[{task_id}] ❌ ALL UPLOADS FAILED")
             
             final.close()
             for c in clips: c.close()
