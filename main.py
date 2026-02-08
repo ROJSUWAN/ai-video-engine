@@ -1,35 +1,102 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Subtitle Fix: Smaller & Bottom Anchored)
+# ✅ Mode: News Brief Pro (Secure GCS Upload)
+# ---------------------------------------------------------
 import sys
 sys.stdout.reconfigure(line_buffering=True)
-import os
-# ---------------------------------------------------------
 
-from flask import Flask, request, jsonify
+import os
 import threading
 import uuid
 import time
 import requests
+import asyncio
+import nest_asyncio
+import gc
+import json  # <--- เพิ่ม json
+import numpy as np
+from flask import Flask, request, jsonify
+
+# AI & Media Libs
 from huggingface_hub import InferenceClient
 from duckduckgo_search import DDGS
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import numpy as np
 import edge_tts
-import asyncio
 from gtts import gTTS
-import nest_asyncio
-import gc
+
+# Google Cloud
+from google.cloud import storage
+import datetime
 
 nest_asyncio.apply()
 app = Flask(__name__)
 
 # 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
-HF_TOKEN = os.environ.get("HF_TOKEN")
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
-# --- Helper Functions (ส่วนใหญ่เหมือนเดิม) ---
+# Environment Variables
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+# ⚙️ Google Cloud Storage Config
+BUCKET_NAME = "n8n-video-storage-0123"
+KEY_FILE_PATH = "gcs_key.json" # ไฟล์สำหรับรัน Local
+
+# ---------------------------------------------------------
+# ☁️ Upload Function (Secure Version)
+# ---------------------------------------------------------
+def get_gcs_client():
+    """สร้าง Client โดยดูว่ามาจาก File หรือ Env Variable"""
+    # 1. ลองดูว่ามี Environment Variable ที่เก็บ JSON ไว้ไหม (สำหรับ Railway)
+    gcs_json_content = os.environ.get("GCS_KEY_JSON")
+    if gcs_json_content:
+        try:
+            print("🔑 Authenticating using Environment Variable...")
+            info = json.loads(gcs_json_content)
+            return storage.Client.from_service_account_info(info)
+        except Exception as e:
+            print(f"❌ Error parsing GCS_KEY_JSON: {e}")
+            return None
+            
+    # 2. ถ้าไม่มี Env ให้ลองหาไฟล์ (สำหรับ Local Computer)
+    elif os.path.exists(KEY_FILE_PATH):
+        print(f"🔑 Authenticating using File: {KEY_FILE_PATH}")
+        return storage.Client.from_service_account_json(KEY_FILE_PATH)
+    
+    else:
+        print("❌ Error: No GCS Credentials found (File or Env)")
+        return None
+
+def upload_to_gcs(source_file_name):
+    """อัปโหลดไฟล์ไป GCS และขอ Signed URL"""
+    try:
+        storage_client = get_gcs_client()
+        if not storage_client:
+            return None
+
+        destination_blob_name = os.path.basename(source_file_name)
+        print(f"☁️ Uploading {source_file_name} to GCS Bucket: {BUCKET_NAME}...")
+        
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(destination_blob_name)
+        
+        # Upload (Timeout 300s)
+        blob.upload_from_filename(source_file_name, timeout=300)
+
+        # Generate Link (1 Hour Expiration)
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=60),
+            method="GET",
+        )
+        print(f"✅ Upload Success: {url}")
+        return url
+    except Exception as e:
+        print(f"❌ Upload Failed: {e}")
+        return None
+
+# ---------------------------------------------------------
+# 🎨 Helper Functions (Image & Font) - เหมือนเดิม
+# ---------------------------------------------------------
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
     for name in font_names:
@@ -85,6 +152,9 @@ def generate_image_hf(prompt, filename):
         return True
     except: return False
 
+# ---------------------------------------------------------
+# 🔊 Audio Function - เหมือนเดิม
+# ---------------------------------------------------------
 async def create_voice_safe(text, filename):
     try:
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
@@ -93,6 +163,9 @@ async def create_voice_safe(text, filename):
         try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
+# ---------------------------------------------------------
+# 🎬 Video Components - เหมือนเดิม
+# ---------------------------------------------------------
 def create_watermark_clip(duration):
     try:
         size = (720, 1280)
@@ -109,19 +182,12 @@ def create_watermark_clip(duration):
         return ImageClip(np.array(img)).set_duration(duration)
     except: return None
 
-# ---------------------------------------------------------
-# 🔥 Subtitle แก้ไขใหม่ (เล็ก + ชิดล่าง)
-# ---------------------------------------------------------
 def create_text_clip(text, size=(720, 1280), duration=5):
     try:
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-
-        # 1️⃣ ปรับขนาดฟอนต์ให้เล็กลง (จาก 45 เหลือ 32)
         font_size = 32
         font = get_font(font_size)
-
-        # 2️⃣ เพิ่มจำนวนตัวอักษรต่อบรรทัด (จาก 20 เป็น 35)
         limit_chars = 35
         lines = []
         temp = ""
@@ -129,96 +195,54 @@ def create_text_clip(text, size=(720, 1280), duration=5):
             if len(temp) < limit_chars: temp += char
             else: lines.append(temp); temp = char
         lines.append(temp)
-
-        # 3️⃣ คำนวณตำแหน่งใหม่ ให้ชิดขอบล่าง
-        line_height = font_size + 10 # ระยะห่างบรรทัด
+        line_height = font_size + 10
         total_height = len(lines) * line_height
-        margin_bottom = 50 # เว้นจากขอบล่าง 50px
+        margin_bottom = 50
         start_y = size[1] - total_height - margin_bottom
-
-        # วาดกล่องดำพื้นหลัง (ให้พอดีตัวหนังสือ)
         padding = 10
         draw.rectangle([20, start_y - padding, size[0]-20, start_y + total_height + padding], fill=(0,0,0,180))
-
         cur_y = start_y
         for line in lines:
-            # จัดกึ่งกลางแนวนอน
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
             x = (size[0] - text_width) / 2
-
-            # วาดตัวหนังสือ (มีขอบดำบางๆ ให้อ่านชัด)
             draw.text((x-1, cur_y), line, font=font, fill="black")
             draw.text((x+1, cur_y), line, font=font, fill="black")
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += line_height
-
         return ImageClip(np.array(img)).set_duration(duration)
     except Exception as e:
         print(f"Subtitle Error: {e}")
         return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
-# --- Upload Functions (ใช้ชุดเดิมที่เสถียรที่สุด) ---
-def upload_to_host(filename):
-    # ... (ใช้โค้ด Upload เดิมจากเวอร์ชันที่แล้วได้เลยครับ เพื่อความกระชับผมละไว้)
-    # ถ้าต้องการให้ผมแปะส่วน Upload เต็มๆ บอกได้ครับ
-    file_size = os.path.getsize(filename) / (1024*1024)
-    print(f"☁️ Uploading File: {file_size:.2f} MB")
-    # 1. 0x0.st
-    print("🚀 Try 1: 0x0.st...")
-    try:
-        with open(filename, 'rb') as f:
-            r = requests.post("https://0x0.st", files={'file': f}, timeout=60)
-            if r.status_code == 200 and r.text.startswith("http"):
-                return r.text.strip()
-    except: pass
-    # 2. Catbox
-    print("🚀 Try 2: Catbox...")
-    try:
-        with open(filename, 'rb') as f:
-            r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': f}, timeout=60)
-            if r.status_code == 200 and len(r.text) > 10: return r.text
-    except: pass
-    # 3. Discord
-    if DISCORD_WEBHOOK:
-        try:
-            with open(filename, 'rb') as f:
-                requests.post(DISCORD_WEBHOOK, files={'file': f}, timeout=60)
-                return "CHECK_DISCORD"
-        except: pass
-    return None
-
-# --- Main Process & API ---
+# ---------------------------------------------------------
+# 🎞️ Main Process - เหมือนเดิม
+# ---------------------------------------------------------
 def process_video_background(task_id, scenes):
-    # ... (ส่วนนี้เหมือนเดิมเป๊ะ ไม่ต้องแก้)
-    print(f"[{task_id}] 🎬 Starting...")
+    print(f"[{task_id}] 🎬 Starting Process...")
     output_filename = f"video_{task_id}.mp4"
     try:
         valid_clips = []
         for i, scene in enumerate(scenes):
             gc.collect()
-            print(f"[{task_id}] Scene {i+1}...")
+            print(f"[{task_id}] Processing Scene {i+1}/{len(scenes)}...")
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
-
             prompt = scene.get('image_url', '')
             success = False
             if "http" in prompt and download_image_from_url(prompt, img_file): success = True
             if not success and not search_real_image(prompt, img_file):
                 if not generate_image_hf(prompt, img_file):
                     Image.new('RGB', (720, 1280), (0,0,50)).save(img_file)
-
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
-
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
                     dur = max(4, audio.duration + 0.5)
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
-                    # ✅ เรียกใช้ Subtitle ตัวใหม่
                     txt_clip = create_text_clip(scene['script'], duration=dur)
                     watermark = create_watermark_clip(dur)
                     layers = [img_clip, txt_clip]
@@ -227,33 +251,47 @@ def process_video_background(task_id, scenes):
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
                     valid_clips.append(clip_output)
                     video.close(); audio.close(); img_clip.close(); txt_clip.close()
-                except Exception as e: print(f"Error: {e}")
-
+                except Exception as e: print(f"Scene Error: {e}")
         if valid_clips:
-            print(f"[{task_id}] 🎞️ Merging...")
+            print(f"[{task_id}] 🎞️ Merging {len(valid_clips)} clips...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
             final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
-            url = upload_to_host(output_filename)
+            
+            # ✅ Upload
+            url = upload_to_gcs(output_filename)
+            
             if url:
-                requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url}, timeout=10)
+                try:
+                    requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url}, timeout=20)
+                    print(f"[{task_id}] ✅ Webhook sent successfully!")
+                except Exception as e: print(f"[{task_id}] ❌ Webhook Error: {e}")
+            else: print(f"[{task_id}] ❌ Failed to get Upload URL")
             final.close()
             for c in clips: c.close()
-    except: pass
+        else: print(f"[{task_id}] ❌ No valid clips generated.")
+    except Exception as e: print(f"[{task_id}] Critical Error: {e}")
     finally:
         try:
-             for f in os.listdir():
-                if task_id in f: os.remove(f)
+            for f in os.listdir():
+                if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')): os.remove(f)
+            print(f"[{task_id}] 🧹 Cleanup done.")
         except: pass
 
 @app.route('/create-video', methods=['POST'])
 def api_create_video():
     data = request.json
     scenes = data.get('scenes', [])
+    if not scenes: return jsonify({"error": "No scenes provided"}), 400
     task_id = str(uuid.uuid4())
+    print(f"🚀 Received Task: {task_id}")
     thread = threading.Thread(target=process_video_background, args=(task_id, scenes))
     thread.start()
     return jsonify({"status": "processing", "task_id": task_id}), 202
+
+@app.route('/', methods=['GET'])
+def health_check():
+    return "AI Video Engine is Running (Secure Mode)!", 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
