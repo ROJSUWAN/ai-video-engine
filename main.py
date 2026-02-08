@@ -1,16 +1,17 @@
 # ---------------------------------------------------------
-# ✅ บังคับให้โชว์ Logs ทันที (แก้ปัญหา Logs ค้าง/เงียบ)
+# ✅ Mode: News Digest (Real Images + Safe Subtitles)
 import sys
 sys.stdout.reconfigure(line_buffering=True)
+import os
 # ---------------------------------------------------------
 
 from flask import Flask, request, jsonify
 import threading
 import uuid
-import os
 import time
 import requests
 from huggingface_hub import InferenceClient
+from duckduckgo_search import DDGS # ✅ พระเอกคนใหม่ (หารูปจริง)
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -19,74 +20,79 @@ import asyncio
 from gtts import gTTS
 import nest_asyncio
 import gc
-import random
 from urllib.parse import unquote
 
 nest_asyncio.apply()
 app = Flask(__name__)
 
-# 🔗 Webhook URL (อันเดิม)
+# 🔗 Webhook URL
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
-
-# 🔑 Token ของคุณ (ใส่ตรงนี้ปลอดภัยกว่าใส่ใน requirements.txt)
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 # --- Helper Functions ---
 
 def get_font(fontsize):
-    # พยายามหาฟอนต์ที่รองรับภาษาไทย
-    font_names = ["tahoma.ttf", "arial.ttf", "leelawad.ttf", "NotoSansThai-Regular.ttf"]
+    # หาฟอนต์ที่อ่านง่ายๆ สำหรับข่าว
+    font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf", "LeelawadeeUI.ttf"]
     for name in font_names:
         if os.path.exists(name): return ImageFont.truetype(name, fontsize)
-        
-    # Linux Path (บน Railway)
+    
     linux_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", # มักจะมีตัวนี้
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
     ]
     for path in linux_paths:
         if os.path.exists(path): return ImageFont.truetype(path, fontsize)
-        
     return ImageFont.load_default()
 
-def create_placeholder_image(filename):
-    img = Image.new('RGB', (720, 1280), color=(50, 50, 50))
-    img.save(filename)
+def search_real_image(query, filename):
+    """🔍 ค้นหารูปจริงจาก DuckDuckGo"""
+    print(f"🌍 Searching Real Image for: {query}...")
+    try:
+        with DDGS() as ddgs:
+            # ค้นหา 1 รูป
+            results = list(ddgs.images(query, max_results=1))
+            if results:
+                image_url = results[0]['image']
+                print(f"✅ Found Image: {image_url[:50]}...")
+                
+                # โหลดรูป
+                response = requests.get(image_url, timeout=10)
+                if response.status_code == 200:
+                    with open(filename, 'wb') as f: f.write(response.content)
+                    # แปลงเป็น JPG มาตรฐาน
+                    with Image.open(filename) as img:
+                        img.convert("RGB").resize((720, 1280)).save(filename)
+                    return True
+    except Exception as e:
+        print(f"⚠️ Search Failed: {e}")
+    return False
 
 def generate_image_hf(prompt, filename):
-    print(f"🎨 Generating Image: {prompt[:30]}...")
+    """🎨 แผนสำรอง: ถ้าหารูปจริงไม่ได้ ให้ AI วาดแทน"""
+    print(f"🎨 Generating Backup Image: {prompt[:30]}...")
+    if not HF_TOKEN: return False
     
-    # รายชื่อโมเดล (ตัวแรกคือ Flux = ภาพสวยเหมือน Midjourney)
-    models = [
-        "black-forest-labs/FLUX.1-dev", 
-        "stabilityai/stable-diffusion-xl-base-1.0"
-    ]
-    
+    models = ["black-forest-labs/FLUX.1-dev", "stabilityai/stable-diffusion-xl-base-1.0"]
     client = InferenceClient(token=HF_TOKEN)
     
     for model in models:
         try:
-            # สร้างภาพแนวตั้ง (768x1024) แล้วย่อลง
             image = client.text_to_image(prompt, model=model, height=1024, width=768)
             image = image.convert("RGB").resize((720, 1280))
             image.save(filename)
-            print(f"✅ Image Success ({model})")
             return True
-        except Exception as e:
-            print(f"⚠️ {model} error: {e}")
-            time.sleep(1)
-            
+        except: time.sleep(1)
     return False
 
 def get_clean_prompt(scene):
-    # ดึง Prompt ออกมาจาก n8n (รองรับทั้ง Link Pollinations และ Text ธรรมดา)
+    # ดึง Keyword สำหรับค้นหารูป
     url = scene.get('image_url', '')
-    if "pollinations" in url and "/prompt/" in url:
-        try: return unquote(url.split("/prompt/")[1].split("?")[0])
-        except: pass
-    if len(url) > 10 and not url.startswith("http"): return url
-    return f"High quality realistic photo of {scene['script']}, cinematic lighting, 8k"
+    # ถ้าเป็น Prompt ยาวๆ ให้ใช้เลย
+    if len(url) > 2: return url
+    # ถ้าไม่มี ให้ใช้ Script
+    return scene['script']
 
 async def create_voice_safe(text, filename):
     try:
@@ -98,107 +104,121 @@ async def create_voice_safe(text, filename):
 
 def create_text_clip(text, size=(720, 1280), duration=5):
     try:
-        # 1. สร้างพื้นหลังใส
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-        font = get_font(50) # ขนาดตัวอักษร
         
-        # 2. ตัดคำ (ขึ้นบรรทัดใหม่)
+        # 📏 Config ตัวอักษร
+        font_size = 45 # ใหญ่ขึ้นนิดนึงให้อ่านง่าย
+        font = get_font(font_size)
+        limit_chars = 18 # จำนวนตัวอักษรต่อบรรทัด (ข่าวอ่านไว)
+        
+        # ✂️ ตัดคำ (Word Wrap)
         lines = []
         temp_line = ""
-        for word in text.split(' '):
-            if len(temp_line + word) < 20: temp_line += word + " "
+        for char in text: # ตัดทีละตัวอักษร (แก้ปัญหาภาษาไทย)
+            if len(temp_line) < limit_chars:
+                temp_line += char
             else:
                 lines.append(temp_line)
-                temp_line = word + " "
+                temp_line = char
         lines.append(temp_line)
 
-        # 3. วาดกล่องดำจางๆ รองหลัง
-        text_height = len(lines) * 70
-        start_y = size[1] - 350 # วางไว้ด้านล่าง
-        draw.rectangle([40, start_y - 20, size[0] - 40, start_y + text_height + 20], fill=(0, 0, 0, 160))
+        # 📐 คำนวณตำแหน่ง (ดันขึ้นจากด้านล่าง)
+        line_height = font_size + 15
+        total_text_height = len(lines) * line_height
+        
+        # Position: วางไว้ด้านล่าง (Bottom Anchor)
+        # ลบ 250px จากขอบล่าง (เผื่อพื้นที่ UI TikTok)
+        bottom_margin = 250 
+        start_y = size[1] - bottom_margin - total_text_height
 
-        # 4. วาดตัวหนังสือ
+        # ⬛ วาดกล่องดำรองหลัง (Background Box)
+        box_padding = 15
+        draw.rectangle(
+            [30, start_y - box_padding, size[0] - 30, start_y + total_text_height + box_padding], 
+            fill=(0, 0, 0, 180) # ดำเข้มขึ้นนิดนึง
+        )
+
+        # ✍️ วาดตัวหนังสือ
         cur_y = start_y
         for line in lines:
             try:
                 # จัดกึ่งกลาง
                 left, top, right, bottom = draw.textbbox((0, 0), line, font=font)
-                x = (size[0] - (right - left)) / 2
-            except: x = 60
+                text_width = right - left
+                x = (size[0] - text_width) / 2
+            except: x = 50
+            
+            # ขอบตัวหนังสือสีดำ (Stroke) ให้อ่านชัดขึ้น
+            draw.text((x-2, cur_y), line, font=font, fill="black")
+            draw.text((x+2, cur_y), line, font=font, fill="black")
+            draw.text((x, cur_y-2), line, font=font, fill="black")
+            draw.text((x, cur_y+2), line, font=font, fill="black")
+            
+            # ตัวหนังสือสีขาว
             draw.text((x, cur_y), line, font=font, fill="white")
-            cur_y += 70
+            cur_y += line_height
 
         return ImageClip(np.array(img)).set_duration(duration)
-    except:
-        # ถ้า Error ให้คืนค่าว่างๆ ไป (กันโปรแกรมพัง)
+    except Exception as e:
+        print(f"⚠️ Text Error: {e}")
         return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
 def upload_to_host(filename):
-    """🔥 ระบบอัปโหลด 2 ชั้น (กันเหนียว)"""
-    
-    # แผน A: tmpfiles.org
+    # Upload Logic (Catbox เป็นหลัก เพราะเก็บได้นานกว่า)
     try:
-        print(f"☁️ Trying upload to tmpfiles.org...")
+        with open(filename, 'rb') as f:
+            r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': f}, timeout=120)
+            if r.status_code == 200: return r.text
+    except: pass
+    
+    # Backup: tmpfiles
+    try:
         with open(filename, 'rb') as f:
             r = requests.post('https://tmpfiles.org/api/v1/upload', files={'file': f}, timeout=60)
             if r.status_code == 200:
-                url = r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
-                print(f"✅ Upload Success (tmpfiles): {url}")
-                return url
-    except Exception as e:
-        print(f"⚠️ tmpfiles failed: {e}")
-
-    # แผน B: Catbox (Backup)
-    try:
-        print(f"☁️ Trying upload to Catbox (Backup)...")
-        with open(filename, 'rb') as f:
-            data = {'reqtype': 'fileupload'}
-            r = requests.post('https://catbox.moe/user/api.php', data=data, files={'fileToUpload': f}, timeout=120)
-            if r.status_code == 200:
-                url = r.text
-                print(f"✅ Upload Success (Catbox): {url}")
-                return url
-    except Exception as e:
-        print(f"❌ All uploads failed: {e}")
-        
+                return r.json()['data']['url'].replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+    except: pass
     return None
 
 def process_video_background(task_id, scenes):
-    print(f"[{task_id}] 🚀 Starting Video Process (Final Version)...")
+    print(f"[{task_id}] 🚀 Starting News Video Process...")
     output_filename = f"video_{task_id}.mp4"
     
     try:
         valid_clips = []
         for i, scene in enumerate(scenes):
-            gc.collect() # ล้าง RAM
-            print(f"[{task_id}] Processing Scene {i+1}...")
+            gc.collect()
+            print(f"[{task_id}] Scene {i+1}...")
             
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
 
-            # 1. Image
-            prompt = get_clean_prompt(scene)
-            if not generate_image_hf(prompt, img_file):
-                 create_placeholder_image(img_file)
+            # 1. Image Search (Real -> AI)
+            search_query = get_clean_prompt(scene)
+            if not search_real_image(search_query, img_file):
+                print("⚠️ Real image not found, using AI...")
+                if not generate_image_hf(search_query, img_file):
+                    # ถ้าพังหมด ให้สร้างภาพสีพื้น
+                    Image.new('RGB', (720, 1280), color=(0, 0, 100)).save(img_file)
 
             # 2. Audio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
 
-            # 3. Render Clip
+            # 3. Render
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
-                    dur = audio.duration + 0.5
+                    dur = audio.duration + 0.5 
+                    if dur < 5: dur = 5 # ขั้นต่ำ 5 วินาที
                     
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
                     txt_clip = create_text_clip(scene['script'], duration=dur)
                     
                     video = CompositeVideoClip([img_clip, txt_clip]).set_audio(audio)
-                    
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
                     
                     if os.path.exists(clip_output): valid_clips.append(clip_output)
@@ -208,26 +228,20 @@ def process_video_background(task_id, scenes):
                     gc.collect()
                 except Exception as e: print(f"❌ Error Scene {i}: {e}")
 
-        # 4. Merge & Upload
+        # 4. Merge
         if valid_clips:
-            print(f"[{task_id}] 🎞️ Merging Clips...")
+            print(f"[{task_id}] 🎞️ Merging...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
             final.write_videofile(output_filename, fps=15, preset='ultrafast')
             
-            print(f"[{task_id}] 📤 Uploading Video...")
             video_url = upload_to_host(output_filename)
-            
             if video_url:
-                print(f"[{task_id}] 🚀 Sending Webhook to n8n...")
+                print(f"[{task_id}] ✅ Success: {video_url}")
                 requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': video_url})
-            else:
-                print(f"[{task_id}] ❌ Upload Failed (Check internet/file size)")
             
             final.close()
             for c in clips: c.close()
-        else:
-            print(f"[{task_id}] ❌ No clips created.")
 
     except Exception as e: print(f"[{task_id}] Error: {e}")
     finally:

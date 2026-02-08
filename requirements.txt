@@ -10,3 +10,4 @@ edge-tts
 gtts
 nest_asyncio
 huggingface_hub
+duckduckgo_search
