@@ -172,22 +172,22 @@ async def create_voice_safe(text, filename):
 # ---------------------------------------------------------
 def create_watermark_clip(duration):
     try:
-        size = (720, 1280)
-        img = Image.new('RGBA', size, (0,0,0,0))
-        draw = ImageDraw.Draw(img)
-        
-        # ตั้งค่า Font และข้อความตามรูป Logo ใหม่
-        font_big = get_font(50)   # สำหรับคำว่า THE BRIEF
-        font_small = get_font(20)  # สำหรับคำว่า NEWS IN MINUTES
-        
-        # วาดแถบสีขาว/ดำ หรือโปร่งใสตามดีไซน์รูปที่แนบมา
-        # (ในที่นี้แนะนำให้วาด Text ลงไปตรงๆ เพื่อความง่าย)
-        draw.text((500, 50), "THE", font=font_small, fill="white")
-        draw.text((500, 75), "BRIEF", font=font_big, fill="white")
-        draw.text((500, 130), "NEWS IN MINUTES", font=font_small, fill="red")
-        
-        return ImageClip(np.array(img)).set_duration(duration)
-    except: return None
+        # 1. โหลดไฟล์ Logo ของคุณ
+        logo_path = "my_logo.png" 
+        if not os.path.exists(logo_path):
+            return None
+            
+        # 2. ปรับขนาด Logo (เช่น กว้าง 200 pixel)
+        logo = (ImageClip(logo_path)
+                .set_duration(duration)
+                .resize(width=200) # ปรับขนาดตามต้องการ
+                .set_opacity(0.9)   # ความโปร่งใส 90%
+                .set_position(("right", "top"))) # วางมุมขวาบน
+                
+        return logo
+    except Exception as e:
+        print(f"Logo Error: {e}")
+        return None
 
 def create_text_clip(text, size=(720, 1280), duration=5):
     """สร้าง Subtitle แบบใหม่: ตัวเล็ก + ชิดล่าง"""
