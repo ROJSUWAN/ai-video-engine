@@ -1,6 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Super Upload Swarm)
-# เพิ่มเว็บฝากไฟล์ 4 เจ้า + Debug ละเอียด
+# ✅ Mode: News Brief Pro (Upload Swarm V2 - More Providers)
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 import os
@@ -28,10 +27,9 @@ app = Flask(__name__)
 # 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 HF_TOKEN = os.environ.get("HF_TOKEN")
-# ถ้าอยากใช้ Discord ให้ใส่ URL ตรงนี้ (เช่น "https://discord.com/api/webhooks/...")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK") 
 
-# --- Helper Functions (เหมือนเดิม) ---
+# --- Helper Functions (คงเดิม) ---
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
     for name in font_names:
@@ -138,64 +136,55 @@ def create_text_clip(text, size=(720, 1280), duration=5):
     except: return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
 # ---------------------------------------------------------
-# 🔥 SUPER UPLOAD SWARM (4 Providers)
+# 🔥 UPLOAD SWARM V2 (เน้นสาย Geek ที่ไม่บล็อก IP)
 # ---------------------------------------------------------
 def upload_to_host(filename):
     file_size = os.path.getsize(filename) / (1024*1024)
     print(f"☁️ Uploading File: {file_size:.2f} MB")
 
-    # 1. PixelDrain (เสถียรมาก)
-    print("🚀 Try 1: PixelDrain...")
+    # 1. 0x0.st (Null Pointer - ไวและเสถียรสุดๆ)
+    print("🚀 Try 1: 0x0.st...")
     try:
         with open(filename, 'rb') as f:
-            r = requests.post("https://pixeldrain.com/api/file", 
-                              files={"file": f}, 
-                              auth=('', ''), # Anonymous
-                              timeout=60)
-            if r.status_code == 201:
-                file_id = r.json()["id"]
-                url = f"https://pixeldrain.com/api/file/{file_id}"
-                print(f"✅ Success (PixelDrain): {url}")
+            r = requests.post("https://0x0.st", files={'file': f}, timeout=60)
+            if r.status_code == 200 and r.text.startswith("http"):
+                url = r.text.strip()
+                print(f"✅ Success (0x0.st): {url}")
                 return url
-            else: print(f"⚠️ PixelDrain Error: {r.text}")
-    except Exception as e: print(f"⚠️ PixelDrain Failed: {e}")
+    except Exception as e: print(f"⚠️ 0x0.st Failed: {e}")
 
-    # 2. File.io (ไวมาก ลิงก์ใช้ได้ 1 ครั้ง)
-    print("🚀 Try 2: File.io...")
+    # 2. Uguu.se (Temporary hosting)
+    print("🚀 Try 2: Uguu.se...")
     try:
         with open(filename, 'rb') as f:
-            r = requests.post('https://file.io', files={'file': f}, timeout=60)
+            r = requests.post("https://uguu.se/upload", files={'files[]': f}, timeout=60)
             if r.status_code == 200:
-                url = r.json()['link']
-                print(f"✅ Success (File.io): {url}")
+                url = r.json()['files'][0]['url']
+                print(f"✅ Success (Uguu): {url}")
                 return url
-    except Exception as e: print(f"⚠️ File.io Failed: {e}")
+    except Exception as e: print(f"⚠️ Uguu Failed: {e}")
 
-    # 3. Catbox (ตัวเดิม)
+    # 3. Catbox (แก้ไข Logic ให้เช็ค Link)
     print("🚀 Try 3: Catbox...")
     try:
         with open(filename, 'rb') as f:
             r = requests.post('https://catbox.moe/user/api.php', 
                               data={'reqtype': 'fileupload'}, 
                               files={'fileToUpload': f}, timeout=60)
-            if r.status_code == 200: 
+            if r.status_code == 200 and len(r.text) > 10: # ต้องยาวกว่า 10 ตัวอักษร
                 print(f"✅ Success (Catbox): {r.text}")
                 return r.text
     except Exception as e: print(f"⚠️ Catbox Failed: {e}")
 
-    # 4. Discord Webhook (ไม้ตายสุดท้าย)
+    # 4. Discord Webhook (ไม้ตาย)
     if DISCORD_WEBHOOK:
         print("🚀 Try 4: Discord Webhook...")
         try:
             with open(filename, 'rb') as f:
-                r = requests.post(DISCORD_WEBHOOK, files={'file': f}, timeout=60)
-                if r.status_code in [200, 204]:
-                    # Discord ไม่คืน URL โดยตรง ต้อง Hack นิดหน่อย หรือถ้าส่งไป Channel แล้วก็ถือว่าจบ
-                    # แต่เพื่อให้ n8n ได้ URL เราจะใช้ Attachment URL (ต้องเขียนโค้ดเพิ่มซับซ้อน)
-                    # เอาเป็นว่าถ้าส่ง Discord ผ่าน คือเราได้ไฟล์แน่นอน
-                    print("✅ Sent to Discord!")
-                    return "CHECK_DISCORD" 
-        except Exception as e: print(f"⚠️ Discord Failed: {e}")
+                requests.post(DISCORD_WEBHOOK, files={'file': f}, timeout=60)
+                print("✅ Sent to Discord!")
+                return "CHECK_DISCORD" 
+        except: pass
 
     return None
 
@@ -244,16 +233,18 @@ def process_video_background(task_id, scenes):
             final = concatenate_videoclips(clips, method="compose")
             final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
             
+            # 🔥 Upload System
             url = upload_to_host(output_filename)
             
+            # ✅ แก้ไข Logic การส่ง Webhook
             if url:
-                print(f"[{task_id}] ✅ DONE: {url}")
+                print(f"[{task_id}] ✅ DONE. URL: {url}")
                 try:
                     requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url}, timeout=10)
                     print(f"[{task_id}] 🚀 Webhook Sent!")
                 except Exception as e: print(f"Webhook Error: {e}")
             else:
-                print(f"[{task_id}] ❌ ALL UPLOADS FAILED")
+                print(f"[{task_id}] ❌ ALL UPLOADS FAILED (Check Logs)")
             
             final.close()
             for c in clips: c.close()
