@@ -29,7 +29,7 @@ app = Flask(__name__)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 
 # 🔑 Token ของคุณ (ใส่ตรงนี้ปลอดภัยกว่าใส่ใน requirements.txt)
-HF_TOKEN = "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"
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
 # --- Helper Functions ---
 
