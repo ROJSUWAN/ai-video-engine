@@ -1,7 +1,8 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Secure GCS Upload)
+# ✅ Mode: News Brief Pro (Auto-Fix Keys: script/caption)
 # ---------------------------------------------------------
 import sys
+# บังคับให้ Python พ่น Log ออกมาทันที
 sys.stdout.reconfigure(line_buffering=True)
 
 import os
@@ -12,7 +13,7 @@ import requests
 import asyncio
 import nest_asyncio
 import gc
-import json  # <--- เพิ่ม json
+import json
 import numpy as np
 from flask import Flask, request, jsonify
 
@@ -32,14 +33,15 @@ nest_asyncio.apply()
 app = Flask(__name__)
 
 # 🔗 Config
+# เปลี่ยน URL Webhook ของคุณตรงนี้ (ถ้ามีการเปลี่ยนแปลง)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/receive-video"
 
 # Environment Variables
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 # ⚙️ Google Cloud Storage Config
-BUCKET_NAME = "n8n-video-storage-0123"
-KEY_FILE_PATH = "gcs_key.json" # ไฟล์สำหรับรัน Local
+BUCKET_NAME = "n8n-video-storage-0123"  # <-- ชื่อ Bucket ของคุณ
+KEY_FILE_PATH = "gcs_key.json"        # <-- ชื่อไฟล์ Key (สำหรับ Local)
 
 # ---------------------------------------------------------
 # ☁️ Upload Function (Secure Version)
@@ -95,7 +97,7 @@ def upload_to_gcs(source_file_name):
         return None
 
 # ---------------------------------------------------------
-# 🎨 Helper Functions (Image & Font) - เหมือนเดิม
+# 🎨 Helper Functions (Image & Font)
 # ---------------------------------------------------------
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
@@ -153,18 +155,20 @@ def generate_image_hf(prompt, filename):
     except: return False
 
 # ---------------------------------------------------------
-# 🔊 Audio Function - เหมือนเดิม
+# 🔊 Audio Function
 # ---------------------------------------------------------
 async def create_voice_safe(text, filename):
     try:
+        # ใช้ Edge TTS เสียงภาษาไทย (Niwat)
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural")
         await communicate.save(filename)
     except:
+        # สำรองใช้ gTTS
         try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
 # ---------------------------------------------------------
-# 🎬 Video Components - เหมือนเดิม
+# 🎬 Video Components
 # ---------------------------------------------------------
 def create_watermark_clip(duration):
     try:
@@ -183,9 +187,11 @@ def create_watermark_clip(duration):
     except: return None
 
 def create_text_clip(text, size=(720, 1280), duration=5):
+    """สร้าง Subtitle แบบใหม่: ตัวเล็ก + ชิดล่าง"""
     try:
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
+
         font_size = 32
         font = get_font(font_size)
         limit_chars = 35
@@ -195,63 +201,90 @@ def create_text_clip(text, size=(720, 1280), duration=5):
             if len(temp) < limit_chars: temp += char
             else: lines.append(temp); temp = char
         lines.append(temp)
+
         line_height = font_size + 10
         total_height = len(lines) * line_height
         margin_bottom = 50
         start_y = size[1] - total_height - margin_bottom
+
         padding = 10
         draw.rectangle([20, start_y - padding, size[0]-20, start_y + total_height + padding], fill=(0,0,0,180))
+
         cur_y = start_y
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
             x = (size[0] - text_width) / 2
+            
+            # Stroke + Text
             draw.text((x-1, cur_y), line, font=font, fill="black")
             draw.text((x+1, cur_y), line, font=font, fill="black")
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += line_height
+
         return ImageClip(np.array(img)).set_duration(duration)
     except Exception as e:
         print(f"Subtitle Error: {e}")
         return ImageClip(np.array(Image.new('RGBA', size, (0,0,0,0)))).set_duration(duration)
 
 # ---------------------------------------------------------
-# 🎞️ Main Process - เหมือนเดิม
+# 🎞️ Main Process (หัวใจสำคัญ - แก้ไขแล้ว)
 # ---------------------------------------------------------
 def process_video_background(task_id, scenes):
     print(f"[{task_id}] 🎬 Starting Process...")
     output_filename = f"video_{task_id}.mp4"
+    
     try:
         valid_clips = []
+        
         for i, scene in enumerate(scenes):
             gc.collect()
             print(f"[{task_id}] Processing Scene {i+1}/{len(scenes)}...")
+            
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
-            prompt = scene.get('image_url', '')
+
+            # ✅ 1. แก้ไข Image Key (รองรับ image_url หรือ imageUrl)
+            prompt = scene.get('image_url') or scene.get('imageUrl') or ''
+            
             success = False
             if "http" in prompt and download_image_from_url(prompt, img_file): success = True
             if not success and not search_real_image(prompt, img_file):
                 if not generate_image_hf(prompt, img_file):
                     Image.new('RGB', (720, 1280), (0,0,50)).save(img_file)
+
+            # ✅ 2. แก้ไข Script Key (รองรับ script หรือ caption)
+            # ถ้าไม่มีทั้งคู่ ให้ใส่ข้อความว่างๆ เพื่อกัน Error
+            script_text = scene.get('script') or scene.get('caption') or "No content available."
+
+            # สร้างเสียง
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(create_voice_safe(scene['script'], audio_file))
+            loop.run_until_complete(create_voice_safe(script_text, audio_file))
+
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
                     audio = AudioFileClip(audio_file)
                     dur = max(4, audio.duration + 0.5)
+                    
                     img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
-                    txt_clip = create_text_clip(scene['script'], duration=dur)
+                    # ใช้ script_text ที่ดึงมาอย่างถูกต้อง
+                    txt_clip = create_text_clip(script_text, duration=dur)
                     watermark = create_watermark_clip(dur)
+                    
                     layers = [img_clip, txt_clip]
                     if watermark: layers.append(watermark)
+                    
                     video = CompositeVideoClip(layers).set_audio(audio)
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
+                    
                     valid_clips.append(clip_output)
+                    
                     video.close(); audio.close(); img_clip.close(); txt_clip.close()
                 except Exception as e: print(f"Scene Error: {e}")
+
+        # --- รวมคลิปและอัปโหลด ---
         if valid_clips:
             print(f"[{task_id}] 🎞️ Merging {len(valid_clips)} clips...")
             clips = [VideoFileClip(c) for c in valid_clips]
@@ -263,18 +296,29 @@ def process_video_background(task_id, scenes):
             
             if url:
                 try:
-                    requests.post(N8N_WEBHOOK_URL, json={'task_id': task_id, 'status': 'success', 'video_url': url}, timeout=20)
+                    requests.post(N8N_WEBHOOK_URL, json={
+                        'task_id': task_id, 
+                        'status': 'success', 
+                        'video_url': url
+                    }, timeout=20)
                     print(f"[{task_id}] ✅ Webhook sent successfully!")
-                except Exception as e: print(f"[{task_id}] ❌ Webhook Error: {e}")
-            else: print(f"[{task_id}] ❌ Failed to get Upload URL")
+                except Exception as e:
+                    print(f"[{task_id}] ❌ Webhook Error: {e}")
+            else:
+                print(f"[{task_id}] ❌ Failed to get Upload URL")
+
             final.close()
             for c in clips: c.close()
-        else: print(f"[{task_id}] ❌ No valid clips generated.")
-    except Exception as e: print(f"[{task_id}] Critical Error: {e}")
+        else:
+            print(f"[{task_id}] ❌ No valid clips generated.")
+
+    except Exception as e:
+        print(f"[{task_id}] Critical Error: {e}")
     finally:
         try:
             for f in os.listdir():
-                if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')): os.remove(f)
+                if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')):
+                    os.remove(f)
             print(f"[{task_id}] 🧹 Cleanup done.")
         except: pass
 
@@ -283,15 +327,20 @@ def api_create_video():
     data = request.json
     scenes = data.get('scenes', [])
     if not scenes: return jsonify({"error": "No scenes provided"}), 400
+    
     task_id = str(uuid.uuid4())
     print(f"🚀 Received Task: {task_id}")
+    
     thread = threading.Thread(target=process_video_background, args=(task_id, scenes))
     thread.start()
+    
     return jsonify({"status": "processing", "task_id": task_id}), 202
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "AI Video Engine is Running (Secure Mode)!", 200
+    return "AI Video Engine is Running (Safe Mode)!", 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    # รองรับ Port จาก Railway
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
