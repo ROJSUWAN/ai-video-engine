@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Final Logic: Master Image Fallback)
+# ✅ Mode: News Brief Pro (Final Fix: Master Image Backup Logic)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที
@@ -118,7 +118,7 @@ def download_image_from_url(url, filename):
     return False
 
 def search_real_image(query, filename):
-    # 🔴 ดักคำมั่ว ถ้าเจอคำพวกนี้ ให้ตอบว่าหาไม่เจอทันที (จะได้ไปใช้รูปหัวข้อแทน)
+    # ดักคำมั่ว
     if not query or "SELECT" in query or "INSERT" in query or "GALLERY" in query or len(query) < 3:
         return False
         
@@ -186,28 +186,28 @@ def create_text_clip(text, size=(720, 1280), duration=5):
     except: return None
 
 # ---------------------------------------------------------
-# 🎞️ Main Process Logic (Updated)
+# 🎞️ Main Process Logic (Fixed: Master Image Sync)
 # ---------------------------------------------------------
 def process_video_background(task_id, scenes, topic):
     print(f"[{task_id}] 🎬 Starting Process (Topic: {topic})...")
     output_filename = f"video_{task_id}.mp4"
     
     # ---------------------------------------------------------
-    # ⭐ STEP 1: หารูป "Master Image" จากหัวข้อข่าวก่อนเลย
+    # ⭐ STEP 1: พยายามหารูปจากหัวข้อข่าว (Topic)
     # ---------------------------------------------------------
     master_image_path = f"master_{task_id}.jpg"
-    has_master_image = False
+    is_master_valid = False # ตัวแปรเช็คว่ารูป Master ใช้ได้จริงไหม
     
     print(f"[{task_id}] 🖼️ Fetching Master Image for topic: {topic}")
     if search_real_image(topic, master_image_path):
-        has_master_image = True
+        is_master_valid = True
         smart_resize_image(master_image_path)
-        print(f"[{task_id}] ✅ Master Image Set!")
+        print(f"[{task_id}] ✅ Master Image Set from Topic!")
     else:
-        # ถ้าหาไม่ได้จริงๆ ให้สร้างภาพดำไว้กันตาย
-        print(f"[{task_id}] ⚠️ Could not find Master Image, using black placeholder.")
+        # ถ้าหาไม่เจอ ให้สร้างภาพดำไว้ก่อน (แต่ตั้ง Flag ว่า False)
+        print(f"[{task_id}] ⚠️ Topic search failed. Creating placeholder.")
         Image.new('RGB', (720, 1280), (20,20,20)).save(master_image_path)
-        has_master_image = True # ถือว่ามี (เป็นสีดำก็ยังดีกว่า Error)
+        is_master_valid = False
 
     try:
         valid_clips = []
@@ -220,31 +220,36 @@ def process_video_background(task_id, scenes, topic):
             clip_output = f"clip_{task_id}_{i}.mp4"
 
             # ---------------------------------------------------------
-            # ⭐ STEP 2: Logic เลือกรูป
+            # ⭐ STEP 2: Logic เลือกรูป (แก้ไขแล้ว)
             # ---------------------------------------------------------
             prompt = scene.get('image_url') or scene.get('imageUrl') or ''
             used_specific_image = False
             
-            # 2.1 ลองหารูปเฉพาะ Scene (Insert)
-            # ต้องไม่ใช่คำมั่วๆ และมีความยาวพอสมควร
+            # 2.1 หารูปเฉพาะ Scene
             if prompt and "SELECT" not in prompt and "GALLERY" not in prompt and len(prompt) > 5:
-                # ลองโหลด URL
                 if "http" in prompt:
                     if download_image_from_url(prompt, img_file): used_specific_image = True
-                # ลอง Search
                 elif not used_specific_image:
                     if search_real_image(prompt, img_file): used_specific_image = True
 
-            # 2.2 ถ้าหารูปเฉพาะไม่ได้ -> ใช้ Master Image (รูปหัวข้อข่าว)
-            if not used_specific_image:
-                print(f"[{task_id}] 🔄 No specific image found (or garbage prompt). Using Master Image.")
-                shutil.copy(master_image_path, img_file)
+            # 2.2 ตัดสินใจว่าจะใช้รูปไหน
+            if used_specific_image:
+                # ถ้าเจอรูปเฉพาะ ให้ใช้รูปนี้
+                smart_resize_image(img_file)
+                
+                # 🔥 KEY FIX: ถ้า Master Image ยังเป็นภาพดำ (หาไม่เจอ) ให้เอารูป Scene นี้ไปเป็น Master ทันที!
+                # (เพื่อให้ Scene ถัดๆ ไป มีรูปใช้ ไม่ดำ)
+                if not is_master_valid:
+                    print(f"[{task_id}] 🔄 Updating Master Image using Scene {i+1}...")
+                    shutil.copy(img_file, master_image_path)
+                    is_master_valid = True
             else:
-                 # ถ้าหาเจอ ก็ Resize ให้สวยงาม
-                 smart_resize_image(img_file)
+                # ถ้าไม่มีรูปเฉพาะ -> ใช้ Master Image (รูปหัวข้อ หรือรูปจาก Scene ก่อนหน้า)
+                print(f"[{task_id}] 🔄 Using Master Image.")
+                shutil.copy(master_image_path, img_file)
 
             # ---------------------------------------------------------
-            # ส่วนสร้างเสียงและคลิป (เหมือนเดิม)
+            # สร้างเสียงและคลิป
             # ---------------------------------------------------------
             script_text = scene.get('script') or scene.get('caption') or "No content."
             loop = asyncio.new_event_loop()
@@ -291,7 +296,6 @@ def process_video_background(task_id, scenes, topic):
     except Exception as e: print(f"Error: {e}")
     finally:
         try:
-            # ลบไฟล์ Temp ทั้งหมด รวมถึง Master Image
             for f in os.listdir():
                 if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')):
                     try: os.remove(f)
