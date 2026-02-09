@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Auto-Fix Keys: script/caption)
+# ✅ Mode: News Brief Pro (Final Fix: Smart Resize + Blur Background)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที (เพื่อดู Logs ใน Railway)
@@ -32,15 +32,15 @@ nest_asyncio.apply()
 app = Flask(__name__)
 
 # 🔗 Config
-# ✅ แก้ไข URL Webhook ตามที่คุณระบุ
-N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook-test/video-completed"
+# ✅ URL Webhook (Production)
+N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed"
 
 # Environment Variables
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 # ⚙️ Google Cloud Storage Config
-BUCKET_NAME = "n8n-video-storage-0123"  # <-- ชื่อ Bucket ของคุณ
-KEY_FILE_PATH = "gcs_key.json"        # <-- ชื่อไฟล์ Key (สำหรับ Local)
+BUCKET_NAME = "n8n-video-storage-0123"
+KEY_FILE_PATH = "gcs_key.json"
 
 # ---------------------------------------------------------
 # ☁️ Upload Function (Secure Version)
@@ -50,7 +50,6 @@ def get_gcs_client():
     gcs_json_content = os.environ.get("GCS_KEY_JSON")
     if gcs_json_content:
         try:
-            # print("🔑 Authenticating using Environment Variable...")
             info = json.loads(gcs_json_content)
             return storage.Client.from_service_account_info(info)
         except Exception as e:
@@ -79,10 +78,10 @@ def upload_to_gcs(source_file_name):
         # Upload (Timeout 300s)
         blob.upload_from_filename(source_file_name, timeout=300)
 
-        # Generate Link (1 Hour Expiration - ปรับเวลาได้ตามต้องการ)
+        # Generate Link (12 Hours Expiration)
         url = blob.generate_signed_url(
             version="v4",
-            expiration=datetime.timedelta(hours=12), # เพิ่มเวลาให้ Link อยู่ได้นานขึ้น
+            expiration=datetime.timedelta(hours=12),
             method="GET",
         )
         print(f"✅ Upload Success: {url}")
@@ -92,13 +91,65 @@ def upload_to_gcs(source_file_name):
         return None
 
 # ---------------------------------------------------------
-# 🎨 Helper Functions (Image & Font)
+# 🎨 Helper Functions (Image & Font) - ⭐ จุดแก้ไขสำคัญ
 # ---------------------------------------------------------
+def smart_resize_image(img_path):
+    """
+    ฟังก์ชันสำคัญ: ปรับขนาดภาพให้เป็น 720x1280 (9:16)
+    โดยไม่ยืดภาพ (No Stretch) แต่ใช้เทคนิค Blur Background แทน
+    """
+    try:
+        target_size = (720, 1280)
+        
+        with Image.open(img_path) as img:
+            img = img.convert("RGB")
+            
+            # ถ้าขนาดเท่ากันเป๊ะอยู่แล้ว ให้ข้ามไป
+            if img.size == target_size:
+                return True
+
+            # 1. สร้างพื้นหลังเบลอ (Background)
+            bg = img.copy()
+            # คำนวณสัดส่วนเพื่อขยายให้เต็มจอ
+            bg_ratio = target_size[0] / target_size[1]
+            img_ratio = img.width / img.height
+            
+            if img_ratio > bg_ratio: # ภาพต้นฉบับกว้างกว่า (แนวนอน)
+                resize_height = target_size[1]
+                resize_width = int(resize_height * img_ratio)
+            else: # ภาพต้นฉบับสูงกว่า
+                resize_width = target_size[0]
+                resize_height = int(resize_width / img_ratio)
+                
+            bg = bg.resize((resize_width, resize_height), Image.Resampling.LANCZOS)
+            
+            # Crop ตรงกลางให้ได้ขนาด 720x1280
+            left = (bg.width - target_size[0]) // 2
+            top = (bg.height - target_size[1]) // 2
+            bg = bg.crop((left, top, left + target_size[0], top + target_size[1]))
+            
+            # ใส่ Blur
+            bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
+            
+            # 2. ย่อภาพจริงให้พอดีกรอบ (Thumbnail)
+            img.thumbnail((720, 1280), Image.Resampling.LANCZOS)
+            
+            # 3. แปะภาพจริงลงตรงกลางพื้นหลัง
+            x = (target_size[0] - img.width) // 2
+            y = (target_size[1] - img.height) // 2
+            bg.paste(img, (x, y))
+            
+            # บันทึกทับไฟล์เดิม
+            bg.save(img_path)
+            return True
+    except Exception as e:
+        print(f"Resize Error: {e}")
+        return False
+
 def get_font(fontsize):
     font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
     for name in font_names:
         if os.path.exists(name): return ImageFont.truetype(name, fontsize)
-    # Font สำรองสำหรับ Linux
     linux_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"]
     for path in linux_paths:
         if os.path.exists(path): return ImageFont.truetype(path, fontsize)
@@ -110,6 +161,8 @@ def download_image_from_url(url, filename):
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             with open(filename, 'wb') as f: f.write(r.content)
+            # ✅ เรียกใช้ Smart Resize ทันทีเมื่อโหลดเสร็จ
+            smart_resize_image(filename)
             return True
     except: pass
     return False
@@ -128,7 +181,6 @@ def search_real_image(query, filename):
 # ---------------------------------------------------------
 async def create_voice_safe(text, filename):
     try:
-        # ใช้ Edge TTS เสียงภาษาไทย (Niwat) เร็วขึ้น 25%
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+25%")
         await communicate.save(filename)
     except:
@@ -140,33 +192,22 @@ async def create_voice_safe(text, filename):
 # ---------------------------------------------------------
 def create_watermark_clip(duration):
     try:
-        # 1. โหลดไฟล์ Logo ของคุณ
         logo_path = "my_logo.png" 
         if not os.path.exists(logo_path):
             return None
-            
-        # 2. ปรับขนาด Logo (กว้าง 200 pixel)
-        logo = (ImageClip(logo_path)
+        return (ImageClip(logo_path)
                 .set_duration(duration)
                 .resize(width=200)
                 .set_opacity(0.9)
-                .set_position(("right", "top"))) # วางมุมขวาบน
-                
-        return logo
-    except Exception as e:
-        print(f"Logo Error: {e}")
-        return None
+                .set_position(("right", "top")))
+    except: return None
 
 def create_text_clip(text, size=(720, 1280), duration=5):
-    """สร้าง Subtitle โดยใช้ Pillow (เสถียรกว่า TextClip บน Linux)"""
     try:
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-
         font_size = 36
         font = get_font(font_size)
-        
-        # จัดการการตัดคำ (Word Wrap)
         limit_chars = 30
         lines = []
         temp = ""
@@ -175,35 +216,26 @@ def create_text_clip(text, size=(720, 1280), duration=5):
             else: lines.append(temp); temp = char
         lines.append(temp)
 
-        # คำนวณตำแหน่ง (วางไว้ด้านล่าง)
         line_height = font_size + 10
         total_height = len(lines) * line_height
         margin_bottom = 100
         start_y = size[1] - total_height - margin_bottom
-
-        # วาด Background สีดำจางๆ
+        
         padding = 15
         draw.rectangle([20, start_y - padding, size[0]-20, start_y + total_height + padding], fill=(0,0,0,160))
-
-        # วาดตัวหนังสือ
+        
         cur_y = start_y
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
             x = (size[0] - text_width) / 2
-            
-            # Stroke (ขอบตัวหนังสือ)
             draw.text((x-1, cur_y), line, font=font, fill="black")
             draw.text((x+1, cur_y), line, font=font, fill="black")
-            
-            # Text (สีขาว)
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += line_height
-
+            
         return ImageClip(np.array(img)).set_duration(duration)
-    except Exception as e:
-        print(f"Subtitle Error: {e}")
-        return None
+    except: return None
 
 # ---------------------------------------------------------
 # 🎞️ Main Process Logic
@@ -216,7 +248,7 @@ def process_video_background(task_id, scenes):
         valid_clips = []
         
         for i, scene in enumerate(scenes):
-            gc.collect() # เคลียร์ RAM
+            gc.collect()
             print(f"[{task_id}] Processing Scene {i+1}/{len(scenes)}...")
             
             img_file = f"temp_{task_id}_{i}.jpg"
@@ -227,54 +259,46 @@ def process_video_background(task_id, scenes):
             prompt = scene.get('image_url') or scene.get('imageUrl') or ''
             success = False
             
-            # กรณีเป็น URL รูปภาพ
             if "http" in prompt and download_image_from_url(prompt, img_file): 
                 success = True
             
-            # กรณีต้อง Search (ถ้าโหลดไม่ผ่านหรือไม่ใช่ URL)
             if not success and prompt:
                 search_real_image(prompt, img_file)
             
-            # ถ้ายังไม่มีรูป ให้สร้างรูปดำ
+            # ถ้าไม่มีรูป ให้สร้างรูปดำ แล้วปรับขนาด
             if not os.path.exists(img_file):
                 Image.new('RGB', (720, 1280), (20,20,20)).save(img_file)
+            
+            # ⭐ Double Check: เรียกใช้ Smart Resize อีกครั้งเพื่อความชัวร์
+            smart_resize_image(img_file)
 
             # 2. Prepare Audio
             script_text = scene.get('script') or scene.get('caption') or "No content."
-            
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(script_text, audio_file))
 
-            # 3. Create Clip using MoviePy
+            # 3. Create Clip
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 try:
-                    # Audio
                     audio = AudioFileClip(audio_file)
-                    dur = audio.duration  # ไม่บวกเวลาเพิ่ม เพื่อให้เสียงต่อเนื่อง (Gapless)
+                    dur = audio.duration
                     
-                    # Image (Pan/Zoom effect could be added here, currently static)
-                    img_clip = ImageClip(img_file).set_duration(dur).resize((720, 1280))
+                    # ✅ โหลดภาพมาใช้เลย ไม่ต้อง .resize((720, 1280)) อีก เพราะไฟล์ถูกแก้มาแล้ว
+                    img_clip = ImageClip(img_file).set_duration(dur)
                     
-                    # Subtitle
                     txt_clip = create_text_clip(script_text, duration=dur)
-                    
-                    # Logo
                     watermark = create_watermark_clip(dur)
                     
-                    # Composite
                     layers = [img_clip]
                     if txt_clip: layers.append(txt_clip)
                     if watermark: layers.append(watermark)
                     
                     video = CompositeVideoClip(layers).set_audio(audio)
-                    
-                    # Write temp clip
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
                     
                     valid_clips.append(clip_output)
                     
-                    # Cleanup Memory
                     video.close(); audio.close(); img_clip.close()
                 except Exception as e:
                     print(f"Scene Error: {e}")
@@ -285,29 +309,22 @@ def process_video_background(task_id, scenes):
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
             
-            # Render Final Video
             final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
             
-            # --- Upload to GCS ---
             url = upload_to_gcs(output_filename)
             
-            # --- Callback to n8n ---
             if url:
                 try:
                     payload = {
-                        'id': task_id,        # ID เพื่อระบุแถวใน DB
-                        'video_url': url,     # URL วิดีโอ
+                        'id': task_id,
+                        'video_url': url,
                         'status': 'success'
                     }
-                    print(f"[{task_id}] 📞 Sending Callback to: {N8N_WEBHOOK_URL}")
                     requests.post(N8N_WEBHOOK_URL, json=payload, timeout=20)
                     print(f"[{task_id}] ✅ Callback sent successfully!")
                 except Exception as e:
-                    print(f"[{task_id}] ❌ Webhook/Callback Error: {e}")
-            else:
-                print(f"[{task_id}] ❌ Failed to get Upload URL")
-
-            # Cleanup Final
+                    print(f"[{task_id}] ❌ Webhook Error: {e}")
+            
             final.close()
             for c in clips: c.close()
         else:
@@ -315,9 +332,7 @@ def process_video_background(task_id, scenes):
 
     except Exception as e:
         print(f"[{task_id}] Critical Error: {e}")
-        
     finally:
-        # Cleanup Temp Files
         try:
             for f in os.listdir():
                 if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')):
@@ -326,32 +341,20 @@ def process_video_background(task_id, scenes):
             print(f"[{task_id}] 🧹 Cleanup done.")
         except: pass
 
-# ---------------------------------------------------------
-# 🚀 Flask API Routes
-# ---------------------------------------------------------
 @app.route('/create-video', methods=['POST'])
 def api_create_video():
     data = request.json
     scenes = data.get('scenes', [])
-    
-    # ✅ รับ task_id จาก n8n (ถ้าไม่มีค่อยสร้างใหม่)
     task_id = data.get('task_id')
-    if not task_id:
-        task_id = str(uuid.uuid4())
+    if not task_id: task_id = str(uuid.uuid4())
 
     if not scenes: return jsonify({"error": "No scenes provided"}), 400
     
     print(f"🚀 Received Task: {task_id} with {len(scenes)} scenes")
-    
-    # Run in Background
     thread = threading.Thread(target=process_video_background, args=(task_id, scenes))
     thread.start()
     
     return jsonify({"status": "processing", "task_id": task_id}), 202
-
-@app.route('/', methods=['GET'])
-def health_check():
-    return "AI Video Engine is Running (Callback Enabled)!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
