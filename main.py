@@ -163,6 +163,8 @@ def create_text_clip(text, size=(720, 1280), duration=5):
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
         font_size = 36; font = get_font(font_size)
+        
+        # ตัดคำให้เหมาะสม
         limit_chars = 30; lines = []; temp = ""
         for char in text:
             if len(temp) < limit_chars: temp += char
@@ -170,18 +172,28 @@ def create_text_clip(text, size=(720, 1280), duration=5):
         lines.append(temp)
         
         line_height = font_size + 10; total_height = len(lines) * line_height
-        margin_bottom = 100; start_y = size[1] - total_height - margin_bottom
         
+        # ---------------------------------------------------------
+        # ✅ แก้ไขตำแหน่ง: เปลี่ยนจากด้านล่างเป็นด้านบน (Margin 200)
+        # ---------------------------------------------------------
+        margin_top = 200 
+        start_y = margin_top 
+        # ---------------------------------------------------------
+        
+        # วาดพื้นหลังสีดำโปร่งแสง (Rectangle) หลังข้อความ
         draw.rectangle([20, start_y - 15, size[0]-20, start_y + total_height + 15], fill=(0,0,0,160))
+        
         cur_y = start_y
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
             x = (size[0] - text_width) / 2
+            # วาดเงา/ขอบสีดำ และตัวอักษรสีขาว
             draw.text((x-1, cur_y), line, font=font, fill="black")
             draw.text((x+1, cur_y), line, font=font, fill="black")
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += line_height
+            
         return ImageClip(np.array(img)).set_duration(duration)
     except: return None
 
