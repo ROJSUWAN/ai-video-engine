@@ -162,10 +162,10 @@ def create_text_clip(text, size=(720, 1280), duration=5):
     try:
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-        font_size = 36; font = get_font(font_size)
+        font_size = 28; font = get_font(font_size)
         
         # ตัดคำให้เหมาะสม
-        limit_chars = 30; lines = []; temp = ""
+        limit_chars = 40; lines = []; temp = ""
         for char in text:
             if len(temp) < limit_chars: temp += char
             else: lines.append(temp); temp = char
@@ -176,7 +176,7 @@ def create_text_clip(text, size=(720, 1280), duration=5):
         # ---------------------------------------------------------
         # ✅ แก้ไขตำแหน่ง: เปลี่ยนจากด้านล่างเป็นด้านบน (Margin 200)
         # ---------------------------------------------------------
-        margin_top = 100 
+        margin_top = 130 
         start_y = margin_top 
         # ---------------------------------------------------------
         
