@@ -1,11 +1,12 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Final Fix: Smart Resize + Blur Background)
+# ✅ Mode: News Brief Pro (Final Fix: Reuse Image Logic)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที (เพื่อดู Logs ใน Railway)
 sys.stdout.reconfigure(line_buffering=True)
 
 import os
+import shutil # 📦 เพิ่ม library สำหรับ copy ไฟล์
 import threading
 import uuid
 import time
@@ -244,6 +245,9 @@ def process_video_background(task_id, scenes):
     print(f"[{task_id}] 🎬 Starting Process...")
     output_filename = f"video_{task_id}.mp4"
     
+    # ⭐ ตัวแปรสำหรับเก็บรูปภาพล่าสุดที่ใช้งานได้
+    last_valid_image = None
+    
     try:
         valid_clips = []
         
@@ -259,18 +263,29 @@ def process_video_background(task_id, scenes):
             prompt = scene.get('image_url') or scene.get('imageUrl') or ''
             success = False
             
+            # พยายามโหลดรูปใหม่ก่อน
             if "http" in prompt and download_image_from_url(prompt, img_file): 
                 success = True
             
             if not success and prompt:
                 search_real_image(prompt, img_file)
             
-            # ถ้าไม่มีรูป ให้สร้างรูปดำ แล้วปรับขนาด
-            if not os.path.exists(img_file):
-                Image.new('RGB', (720, 1280), (20,20,20)).save(img_file)
-            
-            # ⭐ Double Check: เรียกใช้ Smart Resize อีกครั้งเพื่อความชัวร์
-            smart_resize_image(img_file)
+            # ---------------------------------------------------
+            # ✅ Logic ใหม่: ตรวจสอบและ Reuse Image
+            # ---------------------------------------------------
+            if os.path.exists(img_file):
+                # ถ้าโหลดรูปสำเร็จ -> ใช้รูปนี้และจำค่าไว้
+                last_valid_image = img_file
+                smart_resize_image(img_file)
+            else:
+                # ถ้าไม่มีรูปใหม่ -> ตรวจสอบว่ามีรูปเก่าให้ใช้ไหม?
+                if last_valid_image and os.path.exists(last_valid_image):
+                    print(f"[{task_id}] ♻️ Reusing image from previous scene...")
+                    shutil.copy(last_valid_image, img_file)
+                else:
+                    # ถ้าไม่มีรูปเก่าเลย (Scene แรกก็หาไม่เจอ) -> สร้างรูปดำ
+                    print(f"[{task_id}] ⚫ No image found, creating black placeholder.")
+                    Image.new('RGB', (720, 1280), (20,20,20)).save(img_file)
 
             # 2. Prepare Audio
             script_text = scene.get('script') or scene.get('caption') or "No content."
@@ -284,7 +299,7 @@ def process_video_background(task_id, scenes):
                     audio = AudioFileClip(audio_file)
                     dur = audio.duration
                     
-                    # ✅ โหลดภาพมาใช้เลย ไม่ต้อง .resize((720, 1280)) อีก เพราะไฟล์ถูกแก้มาแล้ว
+                    # ✅ โหลดภาพมาใช้เลย (เพราะผ่าน process Reuse/Resize มาแล้ว)
                     img_clip = ImageClip(img_file).set_duration(dur)
                     
                     txt_clip = create_text_clip(script_text, duration=dur)
