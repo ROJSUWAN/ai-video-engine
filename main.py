@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Final Fix: pythainlp + Duration)
+# ✅ Mode: News Brief Pro (Final Fix: pythainlp + Duration + Ads Space)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที
@@ -133,7 +133,7 @@ def search_real_image(query, filename):
     return False
 
 # ---------------------------------------------------------
-# 🔤 Font & Text Utilities (ใช้ PyThaiNLP เต็มรูปแบบ)
+# 🔤 Font & Text Utilities
 # ---------------------------------------------------------
 FONT_PATH = "Sarabun-Bold.ttf"
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf"
@@ -153,9 +153,7 @@ def get_font(fontsize):
         return ImageFont.load_default()
 
 def wrap_and_chunk_thai_text(text, max_chars_per_line=32, max_lines=2):
-    # ⭐ ใช้ pythainlp ตัดคำด้วย newmm engine เสมอ
     words = word_tokenize(text, engine="newmm")
-
     chunks, current_chunk, current_line = [], [], ""
     for word in words:
         if len(current_line) + len(word) <= max_chars_per_line:
@@ -169,14 +167,13 @@ def wrap_and_chunk_thai_text(text, max_chars_per_line=32, max_lines=2):
     
     if current_line: current_chunk.append(current_line)
     if current_chunk: chunks.append("\n".join(current_chunk))
-    
     return chunks
 
 def create_text_clip(text_chunk, size=(720, 1280)):
     try:
         img = Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
-        font_size = 36 # ขนาด Subtitle
+        font_size = 36
         font = get_font(font_size)
         
         lines = text_chunk.split('\n')
@@ -186,7 +183,6 @@ def create_text_clip(text_chunk, size=(720, 1280)):
         margin_top = 150 
         start_y = margin_top 
         
-        # กล่องพื้นหลังสีดำโปร่งแสง
         draw.rectangle([20, start_y - 15, size[0]-20, start_y + total_height + 15], fill=(0,0,0,160))
         
         cur_y = start_y
@@ -198,7 +194,6 @@ def create_text_clip(text_chunk, size=(720, 1280)):
                 text_width = draw.textlength(line, font=font)
                 
             x = (size[0] - text_width) / 2
-            # วาดเงาดำ 2 ชั้น และตัวหนังสือสีขาว
             draw.text((x-2, cur_y), line, font=font, fill="black")
             draw.text((x+2, cur_y), line, font=font, fill="black")
             draw.text((x, cur_y), line, font=font, fill="white")
@@ -227,6 +222,51 @@ def create_watermark_clip(duration):
         return (ImageClip(logo_path).set_duration(duration)
                 .resize(width=200).set_opacity(0.9).set_position(("right", "top")))
     except: return None
+
+# ⭐ เพิ่มฟังก์ชันสร้างพื้นที่ Ads Area
+def create_ads_clip(duration):
+    ad_width = 720
+    ad_height = 250
+    ad_path = "my_ads.png"
+
+    try:
+        if os.path.exists(ad_path):
+            # มีรูปโฆษณา -> ดึงมาใช้และปรับขนาดให้พอดีพื้นที่ 720x250
+            ad_clip = (ImageClip(ad_path)
+                       .resize(newsize=(ad_width, ad_height))
+                       .set_position(("center", "bottom"))
+                       .set_duration(duration))
+            return ad_clip
+        else:
+            # ไม่มีรูปโฆษณา -> สร้าง Default Box สีขาวโปร่งแสง
+            img = Image.new('RGBA', (ad_width, ad_height), (255, 255, 255, 180)) 
+            draw = ImageDraw.Draw(img)
+            font_size = 36
+            font = get_font(font_size)
+            
+            text = "พื้นที่โฆษณาว่าง\nขนาด 720 x 250 px"
+            
+            # คำนวณกึ่งกลางเพื่อวาดข้อความ
+            try:
+                bbox = draw.multiline_textbbox((0, 0), text, font=font, align="center")
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+            except AttributeError:
+                text_w = 300
+                text_h = 80
+                
+            x = (ad_width - text_w) / 2
+            y = (ad_height - text_h) / 2
+            
+            draw.multiline_text((x, y), text, font=font, fill="#333333", align="center")
+            
+            placeholder_clip = (ImageClip(np.array(img))
+                                .set_position(("center", "bottom"))
+                                .set_duration(duration))
+            return placeholder_clip
+    except Exception as e:
+        print(f"Error creating ads clip: {e}")
+        return None
 
 # ---------------------------------------------------------
 # 🎞️ Main Process Logic
@@ -287,7 +327,6 @@ def process_video_background(task_id, scenes, topic):
                     
                     img_clip = ImageClip(img_file).set_duration(dur)
                     
-                    # ⭐ ใช้ระบบตัดคำ pythainlp และ Sync กับเสียง
                     chunks = wrap_and_chunk_thai_text(script_text, max_chars_per_line=32, max_lines=2)
                     total_chars = max(sum(len(c.replace('\n', '')) for c in chunks), 1)
                     
@@ -302,9 +341,12 @@ def process_video_background(task_id, scenes, topic):
                         current_time += chunk_duration
                     
                     watermark = create_watermark_clip(dur)
+                    ads_clip = create_ads_clip(dur) # ⭐ เรียกใช้งานโฆษณา
                     
+                    # รวมเลเยอร์ทั้งหมด (เพิ่ม ads_clip ต่อท้าย)
                     layers = [img_clip] + sub_clips
                     if watermark: layers.append(watermark)
+                    if ads_clip: layers.append(ads_clip)
                     
                     video = CompositeVideoClip(layers).set_audio(audio)
                     video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
