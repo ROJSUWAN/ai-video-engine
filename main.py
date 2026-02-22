@@ -226,28 +226,33 @@ def create_watermark_clip(duration):
 # ⭐ เพิ่มฟังก์ชันสร้างพื้นที่ Ads Area
 def create_ads_clip(duration):
     ad_width = 720
-    ad_height = 250
     ad_path = "my_ads.png"
-    
-    # คำนวณแกน Y: สูงวิดีโอ (1280) - สูงป้ายโฆษณา (250) - ระยะห่างจากขอบล่าง (30)
-    y_position = 1280 - ad_height - 30
 
     try:
         if os.path.exists(ad_path):
-            # มีรูปโฆษณา -> ดึงมาใช้และปรับขนาดให้พอดีพื้นที่ 720x250
-            ad_clip = (ImageClip(ad_path)
-                       .resize(newsize=(ad_width, ad_height))
-                       .set_position(("center", y_position)) # ✅ เปลี่ยนตรงนี้
-                       .set_duration(duration))
+            # 1. โหลดรูปและปรับขนาดเฉพาะความกว้างเป็น 720 (ส่วนสูงจะคงอัตราส่วนเดิมอัตโนมัติ ภาพไม่เบี้ยว)
+            ad_clip = ImageClip(ad_path).resize(width=ad_width)
+            
+            # 2. ดึงความสูงจริงของรูปหลังจากย่อ/ขยายให้พอดี 720 แล้ว
+            actual_height = ad_clip.h
+            
+            # 3. คำนวณแกน Y: สูงวิดีโอ (1280) - ความสูงจริง - ระยะห่างขอบล่าง (30)
+            y_position = 1280 - actual_height - 30
+            
+            # 4. ตั้งค่าตำแหน่งและเวลา
+            ad_clip = ad_clip.set_position(("center", y_position)).set_duration(duration)
             return ad_clip
         else:
-            # ไม่มีรูปโฆษณา -> สร้าง Default Box สีขาวโปร่งแสง
-            img = Image.new('RGBA', (ad_width, ad_height), (255, 255, 255, 180)) 
+            # ไม่มีรูปโฆษณา -> สร้าง Default Box (ปรับให้สูงขึ้นนิดนึงเป็น 300 จะได้ดูสวย)
+            default_height = 300
+            y_position = 1280 - default_height - 30
+            
+            img = Image.new('RGBA', (ad_width, default_height), (255, 255, 255, 180)) 
             draw = ImageDraw.Draw(img)
             font_size = 36
             font = get_font(font_size)
             
-            text = "พื้นที่โฆษณาว่าง\nขนาด 720 x 250 px"
+            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px (ส่วนสูงจะปรับตามสัดส่วนจริง)"
             
             # คำนวณกึ่งกลางเพื่อวาดข้อความ
             try:
@@ -259,12 +264,12 @@ def create_ads_clip(duration):
                 text_h = 80
                 
             x = (ad_width - text_w) / 2
-            y = (ad_height - text_h) / 2
+            y = (default_height - text_h) / 2
             
             draw.multiline_text((x, y), text, font=font, fill="#333333", align="center")
             
             placeholder_clip = (ImageClip(np.array(img))
-                                .set_position(("center", y_position)) # ✅ เปลี่ยนตรงนี้
+                                .set_position(("center", y_position))
                                 .set_duration(duration))
             return placeholder_clip
     except Exception as e:
