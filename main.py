@@ -228,13 +228,16 @@ def create_ads_clip(duration):
     ad_width = 720
     ad_height = 250
     ad_path = "my_ads.png"
+    
+    # คำนวณแกน Y: สูงวิดีโอ (1280) - สูงป้ายโฆษณา (250) - ระยะห่างจากขอบล่าง (30)
+    y_position = 1280 - ad_height - 30
 
     try:
         if os.path.exists(ad_path):
             # มีรูปโฆษณา -> ดึงมาใช้และปรับขนาดให้พอดีพื้นที่ 720x250
             ad_clip = (ImageClip(ad_path)
                        .resize(newsize=(ad_width, ad_height))
-                       .set_position(("center", "bottom"))
+                       .set_position(("center", y_position)) # ✅ เปลี่ยนตรงนี้
                        .set_duration(duration))
             return ad_clip
         else:
@@ -261,7 +264,7 @@ def create_ads_clip(duration):
             draw.multiline_text((x, y), text, font=font, fill="#333333", align="center")
             
             placeholder_clip = (ImageClip(np.array(img))
-                                .set_position(("center", "bottom"))
+                                .set_position(("center", y_position)) # ✅ เปลี่ยนตรงนี้
                                 .set_duration(duration))
             return placeholder_clip
     except Exception as e:
