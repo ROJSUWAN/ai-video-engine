@@ -9,3 +9,4 @@ edge_tts
 gtts
 nest_asyncio
 google-cloud-storage
+pythainlp

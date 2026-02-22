@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Final Fix: Master Image Backup Logic)
+# ✅ Mode: News Brief Pro (Final Fix: pythainlp + Duration)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที
@@ -24,6 +24,9 @@ from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import edge_tts
 from gtts import gTTS
+
+# ⭐ Import PyThaiNLP ไว้ระดับบนสุด บังคับใช้ตัดคำภาษาไทย
+from pythainlp.tokenize import word_tokenize
 
 # Google Cloud
 from google.cloud import storage
@@ -118,7 +121,6 @@ def download_image_from_url(url, filename):
     return False
 
 def search_real_image(query, filename):
-    # ดักคำมั่ว
     if not query or "SELECT" in query or "INSERT" in query or "GALLERY" in query or len(query) < 3:
         return False
         
@@ -131,6 +133,83 @@ def search_real_image(query, filename):
     return False
 
 # ---------------------------------------------------------
+# 🔤 Font & Text Utilities (ใช้ PyThaiNLP เต็มรูปแบบ)
+# ---------------------------------------------------------
+FONT_PATH = "Sarabun-Bold.ttf"
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf"
+
+def get_font(fontsize):
+    if not os.path.exists(FONT_PATH):
+        print("📥 Downloading Sarabun-Bold.ttf...", flush=True)
+        try:
+            r = requests.get(FONT_URL, allow_redirects=True, timeout=15)
+            with open(FONT_PATH, 'wb') as f: f.write(r.content)
+        except Exception as e:
+            print(f"❌ Font download failed: {e}")
+            return ImageFont.load_default()
+    try:
+        return ImageFont.truetype(FONT_PATH, fontsize)
+    except Exception:
+        return ImageFont.load_default()
+
+def wrap_and_chunk_thai_text(text, max_chars_per_line=32, max_lines=2):
+    # ⭐ ใช้ pythainlp ตัดคำด้วย newmm engine เสมอ
+    words = word_tokenize(text, engine="newmm")
+
+    chunks, current_chunk, current_line = [], [], ""
+    for word in words:
+        if len(current_line) + len(word) <= max_chars_per_line:
+            current_line += word
+        else:
+            if current_line: current_chunk.append(current_line)
+            current_line = word
+            if len(current_chunk) == max_lines:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = []
+    
+    if current_line: current_chunk.append(current_line)
+    if current_chunk: chunks.append("\n".join(current_chunk))
+    
+    return chunks
+
+def create_text_clip(text_chunk, size=(720, 1280)):
+    try:
+        img = Image.new('RGBA', size, (0,0,0,0))
+        draw = ImageDraw.Draw(img)
+        font_size = 36 # ขนาด Subtitle
+        font = get_font(font_size)
+        
+        lines = text_chunk.split('\n')
+        line_height = font_size + 15
+        total_height = len(lines) * line_height
+        
+        margin_top = 150 
+        start_y = margin_top 
+        
+        # กล่องพื้นหลังสีดำโปร่งแสง
+        draw.rectangle([20, start_y - 15, size[0]-20, start_y + total_height + 15], fill=(0,0,0,160))
+        
+        cur_y = start_y
+        for line in lines:
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                text_width = bbox[2] - bbox[0]
+            except AttributeError:
+                text_width = draw.textlength(line, font=font)
+                
+            x = (size[0] - text_width) / 2
+            # วาดเงาดำ 2 ชั้น และตัวหนังสือสีขาว
+            draw.text((x-2, cur_y), line, font=font, fill="black")
+            draw.text((x+2, cur_y), line, font=font, fill="black")
+            draw.text((x, cur_y), line, font=font, fill="white")
+            cur_y += line_height
+            
+        return ImageClip(np.array(img))
+    except Exception as e:
+        print(f"Error creating text clip: {e}")
+        return None
+
+# ---------------------------------------------------------
 # 🔊 Audio & Components
 # ---------------------------------------------------------
 async def create_voice_safe(text, filename):
@@ -141,15 +220,6 @@ async def create_voice_safe(text, filename):
         try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
-def get_font(fontsize):
-    font_names = ["tahoma.ttf", "arial.ttf", "NotoSansThai-Regular.ttf"]
-    for name in font_names:
-        if os.path.exists(name): return ImageFont.truetype(name, fontsize)
-    linux_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"]
-    for path in linux_paths:
-        if os.path.exists(path): return ImageFont.truetype(path, fontsize)
-    return ImageFont.load_default()
-
 def create_watermark_clip(duration):
     try:
         logo_path = "my_logo.png" 
@@ -158,57 +228,15 @@ def create_watermark_clip(duration):
                 .resize(width=200).set_opacity(0.9).set_position(("right", "top")))
     except: return None
 
-def create_text_clip(text, size=(720, 1280), duration=5):
-    try:
-        img = Image.new('RGBA', size, (0,0,0,0))
-        draw = ImageDraw.Draw(img)
-        font_size = 28; font = get_font(font_size)
-        
-        # ตัดคำให้เหมาะสม
-        limit_chars = 40; lines = []; temp = ""
-        for char in text:
-            if len(temp) < limit_chars: temp += char
-            else: lines.append(temp); temp = char
-        lines.append(temp)
-        
-        line_height = font_size + 10; total_height = len(lines) * line_height
-        
-        # ---------------------------------------------------------
-        # ✅ แก้ไขตำแหน่ง: เปลี่ยนจากด้านล่างเป็นด้านบน (Margin 200)
-        # ---------------------------------------------------------
-        margin_top = 150 
-        start_y = margin_top 
-        # ---------------------------------------------------------
-        
-        # วาดพื้นหลังสีดำโปร่งแสง (Rectangle) หลังข้อความ
-        draw.rectangle([20, start_y - 15, size[0]-20, start_y + total_height + 15], fill=(0,0,0,160))
-        
-        cur_y = start_y
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_width = bbox[2] - bbox[0]
-            x = (size[0] - text_width) / 2
-            # วาดเงา/ขอบสีดำ และตัวอักษรสีขาว
-            draw.text((x-1, cur_y), line, font=font, fill="black")
-            draw.text((x+1, cur_y), line, font=font, fill="black")
-            draw.text((x, cur_y), line, font=font, fill="white")
-            cur_y += line_height
-            
-        return ImageClip(np.array(img)).set_duration(duration)
-    except: return None
-
 # ---------------------------------------------------------
-# 🎞️ Main Process Logic (Fixed: Master Image Sync)
+# 🎞️ Main Process Logic
 # ---------------------------------------------------------
 def process_video_background(task_id, scenes, topic):
     print(f"[{task_id}] 🎬 Starting Process (Topic: {topic})...")
     output_filename = f"video_{task_id}.mp4"
     
-    # ---------------------------------------------------------
-    # ⭐ STEP 1: พยายามหารูปจากหัวข้อข่าว (Topic)
-    # ---------------------------------------------------------
     master_image_path = f"master_{task_id}.jpg"
-    is_master_valid = False # ตัวแปรเช็คว่ารูป Master ใช้ได้จริงไหม
+    is_master_valid = False 
     
     print(f"[{task_id}] 🖼️ Fetching Master Image for topic: {topic}")
     if search_real_image(topic, master_image_path):
@@ -216,7 +244,6 @@ def process_video_background(task_id, scenes, topic):
         smart_resize_image(master_image_path)
         print(f"[{task_id}] ✅ Master Image Set from Topic!")
     else:
-        # ถ้าหาไม่เจอ ให้สร้างภาพดำไว้ก่อน (แต่ตั้ง Flag ว่า False)
         print(f"[{task_id}] ⚠️ Topic search failed. Creating placeholder.")
         Image.new('RGB', (720, 1280), (20,20,20)).save(master_image_path)
         is_master_valid = False
@@ -231,38 +258,23 @@ def process_video_background(task_id, scenes, topic):
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
 
-            # ---------------------------------------------------------
-            # ⭐ STEP 2: Logic เลือกรูป (แก้ไขแล้ว)
-            # ---------------------------------------------------------
             prompt = scene.get('image_url') or scene.get('imageUrl') or ''
             used_specific_image = False
             
-            # 2.1 หารูปเฉพาะ Scene
             if prompt and "SELECT" not in prompt and "GALLERY" not in prompt and len(prompt) > 5:
                 if "http" in prompt:
                     if download_image_from_url(prompt, img_file): used_specific_image = True
                 elif not used_specific_image:
                     if search_real_image(prompt, img_file): used_specific_image = True
 
-            # 2.2 ตัดสินใจว่าจะใช้รูปไหน
             if used_specific_image:
-                # ถ้าเจอรูปเฉพาะ ให้ใช้รูปนี้
                 smart_resize_image(img_file)
-                
-                # 🔥 KEY FIX: ถ้า Master Image ยังเป็นภาพดำ (หาไม่เจอ) ให้เอารูป Scene นี้ไปเป็น Master ทันที!
-                # (เพื่อให้ Scene ถัดๆ ไป มีรูปใช้ ไม่ดำ)
                 if not is_master_valid:
-                    print(f"[{task_id}] 🔄 Updating Master Image using Scene {i+1}...")
                     shutil.copy(img_file, master_image_path)
                     is_master_valid = True
             else:
-                # ถ้าไม่มีรูปเฉพาะ -> ใช้ Master Image (รูปหัวข้อ หรือรูปจาก Scene ก่อนหน้า)
-                print(f"[{task_id}] 🔄 Using Master Image.")
                 shutil.copy(master_image_path, img_file)
 
-            # ---------------------------------------------------------
-            # สร้างเสียงและคลิป
-            # ---------------------------------------------------------
             script_text = scene.get('script') or scene.get('caption') or "No content."
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -274,11 +286,24 @@ def process_video_background(task_id, scenes, topic):
                     dur = audio.duration
                     
                     img_clip = ImageClip(img_file).set_duration(dur)
-                    txt_clip = create_text_clip(script_text, duration=dur)
+                    
+                    # ⭐ ใช้ระบบตัดคำ pythainlp และ Sync กับเสียง
+                    chunks = wrap_and_chunk_thai_text(script_text, max_chars_per_line=32, max_lines=2)
+                    total_chars = max(sum(len(c.replace('\n', '')) for c in chunks), 1)
+                    
+                    sub_clips = []
+                    current_time = 0.0
+                    for chunk in chunks:
+                        chunk_duration = (len(chunk.replace('\n', '')) / total_chars) * dur
+                        tc = create_text_clip(chunk, size=(720, 1280))
+                        if tc is not None:
+                            tc = tc.set_start(current_time).set_duration(chunk_duration)
+                            sub_clips.append(tc)
+                        current_time += chunk_duration
+                    
                     watermark = create_watermark_clip(dur)
                     
-                    layers = [img_clip]
-                    if txt_clip: layers.append(txt_clip)
+                    layers = [img_clip] + sub_clips
                     if watermark: layers.append(watermark)
                     
                     video = CompositeVideoClip(layers).set_audio(audio)
@@ -292,15 +317,23 @@ def process_video_background(task_id, scenes, topic):
             print(f"[{task_id}] 🎞️ Merging {len(valid_clips)} clips...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
+            
+            total_duration = int(final.duration) 
+            
             final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
             
             url = upload_to_gcs(output_filename)
             if url:
                 try:
-                    payload = {'id': task_id, 'video_url': url, 'status': 'success'}
+                    payload = {
+                        'id': task_id, 
+                        'video_url': url, 
+                        'status': 'success',
+                        'video_duration': total_duration 
+                    }
                     requests.post(N8N_WEBHOOK_URL, json=payload, timeout=20)
-                    print(f"[{task_id}] ✅ Callback sent!")
-                except: pass
+                    print(f"[{task_id}] ✅ Callback sent (Duration: {total_duration}s)!")
+                except Exception as e: print(f"Webhook Error: {e}")
             
             final.close()
             for c in clips: c.close()
