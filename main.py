@@ -245,14 +245,14 @@ def create_ads_clip(duration):
         else:
             # ไม่มีรูปโฆษณา -> สร้าง Default Box (ปรับให้สูงขึ้นนิดนึงเป็น 300 จะได้ดูสวย)
             default_height = 300
-            y_position = 1280 - default_height - 30
+            y_position = 1280 - default_height - 80
             
             img = Image.new('RGBA', (ad_width, default_height), (255, 255, 255, 180)) 
             draw = ImageDraw.Draw(img)
             font_size = 36
             font = get_font(font_size)
             
-            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px"
+            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px สนใจ Inbox"
             
             # คำนวณกึ่งกลางเพื่อวาดข้อความ
             try:
