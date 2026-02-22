@@ -252,7 +252,7 @@ def create_ads_clip(duration):
             font_size = 36
             font = get_font(font_size)
             
-            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px (ส่วนสูงจะปรับตามสัดส่วนจริง)"
+            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px"
             
             # คำนวณกึ่งกลางเพื่อวาดข้อความ
             try:
